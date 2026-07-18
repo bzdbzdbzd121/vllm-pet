@@ -12,12 +12,12 @@
       <g class="r-eyes">
         <rect class="r-eye-pill r-eye-left" x="94" y="100" width="15" height="22" rx="7.5"/>
         <rect class="r-eye-pill r-eye-right" x="131" y="100" width="15" height="22" rx="7.5"/>
-        <circle class="r-eye-hl r-eye-hl-left" cx="98.5" cy="105" r="2.4"/>
-        <circle class="r-eye-hl r-eye-hl-right" cx="135.5" cy="105" r="2.4"/>
         <path class="r-eye-arc r-eye-arc-left" d="M91 110 Q101.5 100 112 110"/>
         <path class="r-eye-arc r-eye-arc-right" d="M128 110 Q138.5 100 149 110"/>
         <path class="r-eye-closed r-eye-closed-left" d="M92 108 Q101.5 113 111 108"/>
         <path class="r-eye-closed r-eye-closed-right" d="M129 108 Q138.5 113 148 108"/>
+        <path class="r-eye-squeeze r-eye-squeeze-left" d="M95 101 L107 111 L95 121"/>
+        <path class="r-eye-squeeze r-eye-squeeze-right" d="M145 101 L133 111 L145 121"/>
       </g>
       <path class="r-mouth" d="M110 128 Q120 134 130 128"/>
       <circle class="r-cheek r-cheek-left" cx="86" cy="126" r="5"/>

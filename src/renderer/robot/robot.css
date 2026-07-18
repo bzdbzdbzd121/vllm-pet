@@ -45,9 +45,9 @@
 .r-head-shell { fill: var(--c-body); stroke: var(--c-body-shade); stroke-width: 3; }
 .r-face { fill: var(--c-face); }
 .r-eye-pill { fill: var(--c-eye); }
-.r-eye-hl { fill: #ffffff; opacity: 0.85; }
 .r-eye-arc { stroke: var(--c-eye); stroke-width: 5; fill: none; stroke-linecap: round; opacity: 0; }
 .r-eye-closed { stroke: var(--c-eye); stroke-width: 4; fill: none; stroke-linecap: round; opacity: 0; }
+.r-eye-squeeze { stroke: var(--c-eye); stroke-width: 5; fill: none; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
 .r-mouth { stroke: var(--c-eye); stroke-width: 4; fill: none; stroke-linecap: round; }
 .r-cheek { fill: var(--c-accent); opacity: 0.5; }
 .r-arm { fill: var(--c-body-shade); }
@@ -107,7 +107,7 @@
 .r-shadow { animation: r-shadow-bob var(--bob-dur) ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
 .r-head { transform-box: fill-box; transform-origin: 50% 92%; }
 .r-eye-pill { transform-box: fill-box; transform-origin: center; animation: r-blink var(--blink-dur) linear infinite; }
-.r-eye-arc, .r-eye-closed { transform-box: fill-box; transform-origin: center; }
+.r-eye-arc, .r-eye-closed, .r-eye-squeeze { transform-box: fill-box; transform-origin: center; }
 .r-antenna-glow { animation: r-antenna-pulse var(--antenna-dur) ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
 .r-arm { transform-box: fill-box; transform-origin: 50% 15%; }
 
@@ -117,7 +117,7 @@
 
 /* ---------- 状态：睡觉 ---------- */
 .st-sleeping { --bob-dur: 5.2s; --antenna-dur: 5s; }
-.st-sleeping .r-eye-pill, .st-sleeping .r-eye-hl { opacity: 0; }
+.st-sleeping .r-eye-pill { opacity: 0; }
 .st-sleeping .r-eye-closed { opacity: 1; }
 .st-sleeping .r-antenna-glow { opacity: 0.12; animation: none; }
 .st-sleeping .r-antenna-bulb { fill: var(--c-body-shade); }
@@ -141,7 +141,8 @@
 /* ---------- 状态：推理中 · 重载 ---------- */
 .st-busy-3 { --bob-dur: 0.88s; --antenna-dur: 0.5s; }
 .st-busy-3 .r-hover { animation: r-bob 0.88s ease-in-out infinite, r-shake 0.2s linear infinite; }
-.st-busy-3 .r-eye-pill { animation: r-blink-focus 2.2s linear infinite; }
+.st-busy-3 .r-eye-pill { opacity: 0; }
+.st-busy-3 .r-eye-squeeze { opacity: 1; }
 .st-busy-3 .r-face { animation: r-face-flicker 0.9s ease-in-out infinite; }
 .st-busy-3 .r-chest { animation: r-chest-blink 0.55s ease-in-out infinite; }
 .st-busy-3 .r-arm-left { animation: r-bob 0.88s ease-in-out infinite; }
@@ -157,7 +158,7 @@
 
 /* ---------- 瞬态：完成庆祝 ---------- */
 .is-celebrating .r-hover { animation: r-celebrate 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) 1; }
-.is-celebrating .r-eye-pill, .is-celebrating .r-eye-hl { opacity: 0; }
+.is-celebrating .r-eye-pill { opacity: 0; }
 .is-celebrating .r-eye-arc { opacity: 1; }
 .is-celebrating .r-cheek { opacity: 0.9; }
 
