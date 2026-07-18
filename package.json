@@ -1,0 +1,24 @@
+{
+  "name": "vllm-pet",
+  "version": "0.1.0",
+  "description": "vLLM Pet — 实时反映 vLLM 推理服务状态的桌面宠物",
+  "type": "module",
+  "main": "src/main/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start": "electron .",
+    "dev:desktop": "node scripts/dev-desktop.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "node --test tests/",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3",
+    "vite": "^8.1.5"
+  }
+}
