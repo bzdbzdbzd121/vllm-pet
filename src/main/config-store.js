@@ -11,6 +11,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   metricsPath: '/metrics',
   healthPath: '/health',
   thresholds: { light: 1, medium: 4, heavy: 16, cacheHeavy: 0.85 },
+  stateMap: { light: 'busy-1', medium: 'busy-2', heavy: 'busy-3' },
   skin: 'default-robot',
   idleSleepMinutes: 10,
   window: { alwaysOnTop: true, clickThrough: false, scale: 1, opacity: 1, x: null, y: null }

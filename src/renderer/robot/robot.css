@@ -384,3 +384,18 @@
 .pet-settings .btn-save { background: var(--c-body, #7fd8c9); color: #0c2620; font-weight: 700; }
 .pet-settings .btn-close { background: #29414c; color: #b9d3da; }
 .pet-settings .hint { margin-top: 8px; color: #7d99a2; font-size: 11px; }
+.pet-settings .section {
+  margin: 12px 0 6px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-weight: 700;
+  color: #cfe9ef;
+  font-size: 12px;
+}
+.pet-settings .section:first-of-type { border-top: none; padding-top: 0; }
+.pet-settings .section-note {
+  margin-left: 8px;
+  font-weight: 400;
+  color: #7d99a2;
+  font-size: 11px;
+}

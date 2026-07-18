@@ -17,6 +17,12 @@ contextBridge.exposeInMainWorld('vllmPet', {
     ipcRenderer.on('ui:open-settings', listener)
     return () => ipcRenderer.removeListener('ui:open-settings', listener)
   },
+  onConfigChanged: (cb) => {
+    const listener = (_event, config) => cb(config)
+    ipcRenderer.on('config:changed', listener)
+    return () => ipcRenderer.removeListener('config:changed', listener)
+  },
+  openSettings: () => ipcRenderer.send('settings:open'),
 
   listSkins: () => ipcRenderer.invoke('skins:list'),
   loadSkin: (name) => ipcRenderer.invoke('skins:load', name),

@@ -5,6 +5,8 @@
  * 视觉状态: 'idle' | 'sleeping' | 'connecting' | 'busy-1..3' | 'offline'
  */
 const SLEEP_CHECK_MS = 2000
+const BUSY_ANIMATIONS = ['busy-1', 'busy-2', 'busy-3']
+export const DEFAULT_STATE_MAP = Object.freeze({ light: 'busy-1', medium: 'busy-2', heavy: 'busy-3' })
 
 export class PetStateMachine {
   /**
@@ -12,14 +14,17 @@ export class PetStateMachine {
    *   onVisualState: (visual: string, snap: object) => void,
    *   onStatusLine?: (text: string) => void,
    *   onCelebrate?: () => void,
-   *   idleSleepMinutes?: number
+   *   idleSleepMinutes?: number,
+   *   stateMap?: { light?: string, medium?: string, heavy?: string }
    * }} opts
    */
-  constructor({ onVisualState, onStatusLine, onCelebrate, idleSleepMinutes = 10 }) {
+  constructor({ onVisualState, onStatusLine, onCelebrate, idleSleepMinutes = 10, stateMap }) {
     this.onVisualState = onVisualState
     this.onStatusLine = onStatusLine || (() => {})
     this.onCelebrate = onCelebrate || (() => {})
     this.idleSleepMs = Math.max(1, idleSleepMinutes) * 60_000
+    this.stateMap = { ...DEFAULT_STATE_MAP }
+    this.setStateMap(stateMap)
     this.visual = 'connecting'
     this.idleSince = null
     this._timer = setInterval(() => this._checkSleep(), SLEEP_CHECK_MS)
@@ -27,6 +32,15 @@ export class PetStateMachine {
 
   setIdleSleepMinutes(min) {
     this.idleSleepMs = Math.max(1, Number(min) || 10) * 60_000
+  }
+
+  /** 更新 负载档位 → 动画 映射（非法值回退默认） */
+  setStateMap(map) {
+    for (const key of ['light', 'medium', 'heavy']) {
+      if (map?.[key] && BUSY_ANIMATIONS.includes(map[key])) {
+        this.stateMap[key] = map[key]
+      }
+    }
   }
 
   /** @param {object} snap StatusSnapshot */
@@ -37,8 +51,11 @@ export class PetStateMachine {
 
     if (snap.state === 'offline') next = 'offline'
     else if (snap.state === 'connecting') next = 'connecting'
-    else if (snap.state === 'busy') next = `busy-${Math.min(3, Math.max(1, snap.intensity || 1))}`
-    else next = 'idle'
+    else if (snap.state === 'busy') {
+      const intensity = Math.min(3, Math.max(1, snap.intensity || 1))
+      const key = intensity === 3 ? 'heavy' : intensity === 2 ? 'medium' : 'light'
+      next = this.stateMap[key] || `busy-${intensity}`
+    } else next = 'idle'
 
     // 连续空闲计时：离开 idle 就清零
     if (next === 'idle' && prev !== 'idle' && prev !== 'sleeping') {
@@ -81,7 +98,7 @@ export function formatStatusLine(snap) {
     case 'offline':
       return snap.error ? `离线：${snap.error}` : '离线：服务不可达'
     case 'connecting':
-      return '连接中…'
+      return snap.error || '连接中…'
     case 'busy': {
       const parts = [`推理中 ×${snap.running ?? 0}`]
       if (snap.waiting) parts.push(`队列 ${snap.waiting}`)

@@ -8,7 +8,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: 'index.html',
-        pet: 'pet.html'
+        pet: 'pet.html',
+        settings: 'settings.html'
       }
     }
   }

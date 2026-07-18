@@ -28,6 +28,7 @@ if (SMOKE) {
 }
 
 let win = null
+let settingsWin = null
 let tray = null
 let store = null
 let poller = null
@@ -113,7 +114,7 @@ function rebuildTrayMenu() {
   if (!tray) return
   const config = store.load()
   const menu = Menu.buildFromTemplate([
-    { label: '⚙️ 打开设置', click: () => win?.webContents.send('ui:open-settings') },
+    { label: '⚙️ 打开设置', click: () => openSettingsWindow() },
     { type: 'separator' },
     {
       label: '窗口置顶',
@@ -136,6 +137,41 @@ function rebuildTrayMenu() {
 function applyAndRefresh() {
   applyWindowConfig(store.load())
   rebuildTrayMenu()
+}
+
+/* ---------------- 设置窗口 ---------------- */
+function openSettingsWindow() {
+  if (settingsWin) {
+    settingsWin.focus()
+    return
+  }
+  settingsWin = new BrowserWindow({
+    width: 480,
+    height: 700,
+    minWidth: 420,
+    minHeight: 560,
+    show: !SMOKE,
+    title: 'vLLM Pet 设置',
+    autoHideMenuBar: true,
+    backgroundColor: '#0e1a22',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+  if (process.platform === 'darwin') app.dock?.show()
+  if (DEV) {
+    settingsWin.loadURL('http://localhost:5173/settings.html')
+  } else {
+    settingsWin.loadFile(path.join(ROOT, 'dist', 'settings.html'))
+  }
+  settingsWin.on('closed', () => {
+    settingsWin = null
+    // 设置窗关闭后恢复无 Dock 图标（桌宠常驻托盘）
+    if (process.platform === 'darwin' && !SMOKE) app.dock?.hide()
+  })
 }
 
 /* ---------------- 皮肤目录 ---------------- */
@@ -214,10 +250,13 @@ function registerIpc() {
     applyWindowConfig(saved)
     rebuildTrayMenu()
     poller.restart()
+    // 通知宠物窗口应用新配置（动画映射/皮肤/睡眠时长等）
+    win?.webContents.send('config:changed', saved)
     return saved
   })
   ipcMain.handle('skins:list', () => listSkins())
   ipcMain.handle('skins:load', (_e, name) => loadSkin(name))
+  ipcMain.on('settings:open', () => openSettingsWindow())
   ipcMain.on('window:click-through', (_e, v) => {
     store.save({ window: { clickThrough: !!v } })
     applyAndRefresh()
@@ -281,6 +320,8 @@ if (!gotLock) {
         onStatus: (snap) => win?.webContents.send('status:update', snap)
       })
       poller.start()
+      // 首次运行（未配置服务地址）自动打开设置窗口
+      if (!store.load().apiBase) openSettingsWindow()
     } else {
       // 冒烟模式仍创建 poller 以验证装配；apiBase 默认空 → 不会访问外网
       poller = new PollerService({

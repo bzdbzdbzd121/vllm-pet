@@ -41,7 +41,7 @@ export class PollerService {
     const config = this.getConfig()
     let snap
     if (!config.apiBase) {
-      snap = this._snapshot({ state: 'connecting', error: null })
+      snap = this._snapshot({ state: 'connecting', error: '尚未配置服务地址，右键宠物打开设置' })
     } else {
       try {
         snap = await this._poll(config)

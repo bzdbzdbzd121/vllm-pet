@@ -28,6 +28,7 @@ async function boot() {
 
   const machine = new PetStateMachine({
     idleSleepMinutes: config.idleSleepMinutes ?? 10,
+    stateMap: config.stateMap,
     onVisualState: (visual) => pet.setState(visual),
     onStatusLine: (text) => pet.setStatusLine(text),
     onCelebrate: () => pet.celebrate()
@@ -102,6 +103,7 @@ async function boot() {
     bridge: null,
     onSaved: async (saved) => {
       machine.setIdleSleepMinutes(saved.idleSleepMinutes ?? 10)
+      machine.setStateMap(saved.stateMap)
       pet.applySkin(await resolveSkin(saved.skin, null))
       Object.assign(config, saved)
     }

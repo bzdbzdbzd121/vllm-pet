@@ -10,17 +10,19 @@ import { resolveSkin } from './skins/skin-loader.js'
 
 async function boot() {
   const bridge = typeof window !== 'undefined' ? window.vllmPet : null
-  const provider = IpcStatusProvider.available() ? new IpcStatusProvider(bridge) : new MockStatusProvider()
+  const hasBridge = IpcStatusProvider.available()
+  const provider = hasBridge ? new IpcStatusProvider(bridge) : new MockStatusProvider()
 
   const config = await provider.getConfig()
   const skin = await resolveSkin(config.skin, bridge)
 
   const app = document.getElementById('app')
   const pet = new PetView(app, { skin, scale: config.window?.scale ?? 1 })
-  pet.setStatusLine('连接中…')
+  pet.setStatusLine(config.apiBase ? '连接中…' : '尚未配置服务地址，右键打开设置')
 
   const machine = new PetStateMachine({
     idleSleepMinutes: config.idleSleepMinutes ?? 10,
+    stateMap: config.stateMap,
     onVisualState: (visual) => pet.setState(visual),
     onStatusLine: (text) => pet.setStatusLine(text),
     onCelebrate: () => pet.celebrate()
@@ -28,31 +30,37 @@ async function boot() {
 
   provider.start((snap) => machine.update(snap))
 
-  const settings = new SettingsPanel({
-    provider,
-    bridge,
-    onSaved: async (saved) => {
-      machine.setIdleSleepMinutes(saved.idleSleepMinutes ?? 10)
-      pet.setScale(saved.window?.scale ?? 1)
-      const nextSkin = await resolveSkin(saved.skin, bridge)
-      pet.applySkin(nextSkin)
-    }
-  })
-
-  // 首次运行（未配置服务地址）自动弹出设置
-  if (IpcStatusProvider.available() && !config.apiBase) {
-    settings.open(pet.stage)
-    pet.setStatusLine('先帮我配置 vLLM 服务地址吧')
+  /** 应用新配置（设置窗口保存后由主进程广播，或内嵌面板保存后本地回调） */
+  const applyConfig = async (saved) => {
+    machine.setIdleSleepMinutes(saved.idleSleepMinutes ?? 10)
+    machine.setStateMap(saved.stateMap)
+    pet.setScale(saved.window?.scale ?? 1)
+    pet.applySkin(await resolveSkin(saved.skin, bridge))
   }
 
-  // 右键打开 / 关闭设置
+  // 浏览器/Mock 降级：内嵌气泡设置面板（桌面版走独立设置窗口）
+  const inlineSettings = new SettingsPanel({ provider, bridge, onSaved: applyConfig })
+
+  // 右键打开设置：桌面版 → 独立设置窗口；浏览器 → 内嵌气泡
   pet.stage.addEventListener('contextmenu', (e) => {
     e.preventDefault()
-    settings.toggle(pet.stage)
+    if (hasBridge && bridge.openSettings) bridge.openSettings()
+    else inlineSettings.toggle(pet.stage)
   })
 
-  // 托盘"打开设置"
-  bridge?.onOpenSettings?.(() => settings.open(pet.stage))
+  // 兼容入口：主进程旧式 ui:open-settings 事件
+  bridge?.onOpenSettings?.(() => {
+    if (hasBridge && bridge.openSettings) bridge.openSettings()
+    else inlineSettings.open(pet.stage)
+  })
+
+  // 设置窗口保存后同步新配置
+  bridge?.onConfigChanged?.((saved) => applyConfig(saved))
+
+  // 浏览器 Mock 模式下未配置地址时自动弹出内嵌面板（桌面版由主进程打开设置窗口）
+  if (!hasBridge && !config.apiBase) {
+    inlineSettings.open(pet.stage)
+  }
 
   // 拖动（按下机器人本体开始拖动，松开结束；设置面板内的交互不触发）
   pet.stage.addEventListener('mousedown', (e) => {
