@@ -10,8 +10,9 @@
     "preview": "vite preview",
     "start": "electron .",
     "dev:desktop": "node scripts/dev-desktop.mjs",
+    "mock": "node scripts/mock-vllm.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "test": "node --test tests/",
+    "test": "node --test \"tests/**/*.test.mjs\"",
     "pack": "electron-builder --dir",
     "dist": "electron-builder"
   },

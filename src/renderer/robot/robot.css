@@ -1,0 +1,385 @@
+/* ============================================================
+   vLLM Pet · 机器人渲染与状态动画
+   状态 class（挂在 .pet-stage 上）：
+   st-idle / st-sleeping / st-connecting / st-busy-1..3 / st-offline
+   瞬态：is-celebrating
+   ============================================================ */
+
+.pet-stage {
+  --c-body: #7fd8c9;
+  --c-body-shade: #4fb3a1;
+  --c-face: #12232b;
+  --c-eye: #7ef0ff;
+  --c-accent: #ff8a7a;
+  --c-glow: #9ff2ff;
+  --bob-dur: 3.2s;
+  --blink-dur: 4.4s;
+  --antenna-dur: 2.6s;
+
+  position: relative;
+  width: 240px;
+  height: 280px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pet-scale {
+  width: 100%;
+  height: 100%;
+  transform-origin: 50% 100%;
+}
+
+.pet-stage .r-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* ---------- 配色（可被皮肤 CSS 变量覆盖） ---------- */
+.r-shadow { fill: rgba(10, 24, 30, 0.16); }
+.r-antenna-stem { stroke: var(--c-body-shade); stroke-width: 5; stroke-linecap: round; fill: none; }
+.r-antenna-glow { fill: var(--c-glow); opacity: 0.35; }
+.r-antenna-bulb { fill: var(--c-accent); }
+.r-ear { fill: var(--c-body-shade); }
+.r-head-shell { fill: var(--c-body); stroke: var(--c-body-shade); stroke-width: 3; }
+.r-face { fill: var(--c-face); }
+.r-eye-pill { fill: var(--c-eye); }
+.r-eye-hl { fill: #ffffff; opacity: 0.85; }
+.r-eye-arc { stroke: var(--c-eye); stroke-width: 5; fill: none; stroke-linecap: round; opacity: 0; }
+.r-eye-closed { stroke: var(--c-eye); stroke-width: 4; fill: none; stroke-linecap: round; opacity: 0; }
+.r-mouth { stroke: var(--c-eye); stroke-width: 4; fill: none; stroke-linecap: round; }
+.r-cheek { fill: var(--c-accent); opacity: 0.5; }
+.r-arm { fill: var(--c-body-shade); }
+.r-body-shell { fill: var(--c-body); stroke: var(--c-body-shade); stroke-width: 3; }
+.r-chest { fill: var(--c-accent); }
+.r-chest-hl { fill: #ffffff; opacity: 0.7; }
+
+/* ---------- 基础动画 ---------- */
+@keyframes r-bob {
+  0%, 100% { transform: translateY(0) scale(1, 1); }
+  50% { transform: translateY(-7px) scale(1.012, 0.995); }
+}
+@keyframes r-shadow-bob {
+  0%, 100% { transform: scaleX(1); opacity: 0.16; }
+  50% { transform: scaleX(0.86); opacity: 0.11; }
+}
+@keyframes r-sway {
+  0%, 100% { transform: rotate(-2.2deg); }
+  50% { transform: rotate(2.2deg); }
+}
+@keyframes r-blink {
+  0%, 90%, 100% { transform: scaleY(1); }
+  93% { transform: scaleY(0.1); }
+  96% { transform: scaleY(1); }
+}
+@keyframes r-blink-focus {
+  0%, 88%, 100% { transform: scaleY(0.58); }
+  92% { transform: scaleY(0.08); }
+  96% { transform: scaleY(0.58); }
+}
+@keyframes r-antenna-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(1); }
+  50% { opacity: 0.9; transform: scale(1.25); }
+}
+@keyframes r-chest-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@keyframes r-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-1.6px); }
+  75% { transform: translateX(1.6px); }
+}
+@keyframes r-face-flicker {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.45); }
+}
+@keyframes r-celebrate {
+  0% { transform: translateY(0) scale(1, 1); }
+  25% { transform: translateY(5px) scale(1.12, 0.84); }
+  55% { transform: translateY(-26px) scale(0.93, 1.09); }
+  78% { transform: translateY(0) scale(1.06, 0.92); }
+  100% { transform: translateY(0) scale(1, 1); }
+}
+
+.r-hover { animation: r-bob var(--bob-dur) ease-in-out infinite; }
+.r-shadow { animation: r-shadow-bob var(--bob-dur) ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.r-head { transform-box: fill-box; transform-origin: 50% 92%; }
+.r-eye-pill { transform-box: fill-box; transform-origin: center; animation: r-blink var(--blink-dur) linear infinite; }
+.r-eye-arc, .r-eye-closed { transform-box: fill-box; transform-origin: center; }
+.r-antenna-glow { animation: r-antenna-pulse var(--antenna-dur) ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.r-arm { transform-box: fill-box; transform-origin: 50% 15%; }
+
+/* ---------- 状态：空闲 ---------- */
+.st-idle { --bob-dur: 3.2s; --antenna-dur: 2.6s; }
+.st-idle .r-head { animation: r-sway 6.4s ease-in-out infinite; }
+
+/* ---------- 状态：睡觉 ---------- */
+.st-sleeping { --bob-dur: 5.2s; --antenna-dur: 5s; }
+.st-sleeping .r-eye-pill, .st-sleeping .r-eye-hl { opacity: 0; }
+.st-sleeping .r-eye-closed { opacity: 1; }
+.st-sleeping .r-antenna-glow { opacity: 0.12; animation: none; }
+.st-sleeping .r-antenna-bulb { fill: var(--c-body-shade); }
+.st-sleeping .r-mouth { transform: scale(0.7); transform-box: fill-box; transform-origin: center; }
+
+/* ---------- 状态：连接中 ---------- */
+.st-connecting { --bob-dur: 1.8s; --antenna-dur: 0.7s; }
+.st-connecting .r-head { animation: r-sway 1.6s ease-in-out infinite; }
+
+/* ---------- 状态：推理中 · 轻载 ---------- */
+.st-busy-1 { --bob-dur: 2.2s; --antenna-dur: 1.4s; }
+.st-busy-1 .r-chest { animation: r-chest-blink 1.6s ease-in-out infinite; }
+
+/* ---------- 状态：推理中 · 中载 ---------- */
+.st-busy-2 { --bob-dur: 1.4s; --antenna-dur: 0.9s; }
+.st-busy-2 .r-eye-pill { animation: r-blink-focus var(--blink-dur) linear infinite; }
+.st-busy-2 .r-chest { animation: r-chest-blink 1s ease-in-out infinite; }
+.st-busy-2 .r-arm-left { animation: r-bob 1.4s ease-in-out infinite; }
+.st-busy-2 .r-arm-right { animation: r-bob 1.4s ease-in-out infinite reverse; }
+
+/* ---------- 状态：推理中 · 重载 ---------- */
+.st-busy-3 { --bob-dur: 0.88s; --antenna-dur: 0.5s; }
+.st-busy-3 .r-hover { animation: r-bob 0.88s ease-in-out infinite, r-shake 0.2s linear infinite; }
+.st-busy-3 .r-eye-pill { animation: r-blink-focus 2.2s linear infinite; }
+.st-busy-3 .r-face { animation: r-face-flicker 0.9s ease-in-out infinite; }
+.st-busy-3 .r-chest { animation: r-chest-blink 0.55s ease-in-out infinite; }
+.st-busy-3 .r-arm-left { animation: r-bob 0.88s ease-in-out infinite; }
+.st-busy-3 .r-arm-right { animation: r-bob 0.88s ease-in-out infinite reverse; }
+
+/* ---------- 状态：离线 ---------- */
+.st-offline { --bob-dur: 5.2s; }
+.st-offline .r-hover { filter: grayscale(0.85) brightness(0.82); }
+.st-offline .r-antenna-glow { animation: none; opacity: 0; }
+.st-offline .r-antenna-bulb { fill: #8a949a; }
+.st-offline .r-eye-pill { animation: none; transform: scaleY(0.35); }
+.st-offline .r-mouth { transform: rotate(180deg); transform-box: fill-box; transform-origin: center; }
+
+/* ---------- 瞬态：完成庆祝 ---------- */
+.is-celebrating .r-hover { animation: r-celebrate 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) 1; }
+.is-celebrating .r-eye-pill, .is-celebrating .r-eye-hl { opacity: 0; }
+.is-celebrating .r-eye-arc { opacity: 1; }
+.is-celebrating .r-cheek { opacity: 0.9; }
+
+/* ============================================================
+   粒子特效层（HTML overlay）
+   ============================================================ */
+.pet-fx {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+.pet-fx > span, .pet-fx > i {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+}
+
+/* 蒸汽（中载/重载，头顶两侧） */
+.fx-steam {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,255,255,0.9), rgba(255,255,255,0));
+  opacity: 0;
+}
+.fx-steam.s1 { left: 64px; top: 58px; }
+.fx-steam.s2 { left: 168px; top: 58px; }
+.fx-steam.s3 { left: 78px; top: 48px; }
+.fx-steam.s4 { left: 156px; top: 48px; }
+@keyframes fx-steam-rise {
+  0% { transform: translateY(0) scale(0.4); opacity: 0; }
+  25% { opacity: 0.85; }
+  100% { transform: translateY(-46px) scale(1.5); opacity: 0; }
+}
+.st-busy-2 .fx-steam { animation: fx-steam-rise 1.7s ease-out infinite; }
+.st-busy-3 .fx-steam { animation: fx-steam-rise 1s ease-out infinite; }
+.fx-steam.s2 { animation-delay: 0.45s !important; }
+.fx-steam.s3 { animation-delay: 0.8s !important; }
+.fx-steam.s4 { animation-delay: 0.25s !important; }
+
+/* 汗滴（中载以上） */
+.fx-sweat {
+  width: 7px; height: 10px;
+  border-radius: 50% 50% 60% 60% / 40% 40% 70% 70%;
+  background: #8fd8ff;
+  opacity: 0;
+}
+.fx-sweat.w1 { left: 186px; top: 84px; }
+.fx-sweat.w2 { left: 46px; top: 92px; }
+@keyframes fx-sweat-drop {
+  0% { transform: translateY(-4px) scale(0.6); opacity: 0; }
+  30% { opacity: 0.95; }
+  100% { transform: translateY(30px) scale(1); opacity: 0; }
+}
+.st-busy-2 .fx-sweat { animation: fx-sweat-drop 1.5s ease-in infinite; }
+.st-busy-3 .fx-sweat { animation: fx-sweat-drop 0.9s ease-in infinite; }
+.fx-sweat.w2 { animation-delay: 0.7s !important; }
+
+/* 速度线（重载） */
+.fx-speed {
+  width: 26px; height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--c-glow));
+  opacity: 0;
+}
+.fx-speed.l1 { left: 8px; top: 130px; }
+.fx-speed.l2 { left: 14px; top: 160px; }
+.fx-speed.l3 { right: 8px; top: 145px; transform: scaleX(-1); }
+@keyframes fx-speed-flash {
+  0%, 100% { opacity: 0; transform: translateX(0); }
+  50% { opacity: 0.8; transform: translateX(-6px); }
+}
+.st-busy-3 .fx-speed { animation: fx-speed-flash 0.5s linear infinite; }
+.fx-speed.l2 { animation-delay: 0.15s !important; }
+.fx-speed.l3 { animation-delay: 0.3s !important; }
+
+/* 睡觉 Zzz */
+.fx-zzz {
+  font: 700 18px/1 "Comic Sans MS", "PingFang SC", sans-serif;
+  color: var(--c-glow);
+  text-shadow: 0 0 6px rgba(159, 242, 255, 0.6);
+  opacity: 0;
+}
+.fx-zzz.z1 { left: 168px; top: 66px; font-size: 14px; }
+.fx-zzz.z2 { left: 182px; top: 48px; font-size: 18px; }
+.fx-zzz.z3 { left: 196px; top: 28px; font-size: 23px; }
+@keyframes fx-zzz-float {
+  0% { transform: translate(0, 6px) rotate(-6deg); opacity: 0; }
+  30% { opacity: 0.95; }
+  100% { transform: translate(12px, -22px) rotate(8deg); opacity: 0; }
+}
+.st-sleeping .fx-zzz { animation: fx-zzz-float 2.6s ease-in-out infinite; }
+.fx-zzz.z2 { animation-delay: 0.85s !important; }
+.fx-zzz.z3 { animation-delay: 1.7s !important; }
+
+/* 离线感叹号气泡 */
+.fx-alert {
+  left: 176px; top: 40px;
+  min-width: 30px; height: 30px;
+  border-radius: 15px;
+  background: #ffd166;
+  color: #5b4500;
+  font: 800 18px/30px sans-serif;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  transform: scale(0.5);
+}
+.fx-alert::after {
+  content: "";
+  position: absolute;
+  left: 4px; bottom: -5px;
+  border: 6px solid transparent;
+  border-top-color: #ffd166;
+  border-left-color: #ffd166;
+}
+@keyframes fx-alert-pop {
+  0%, 100% { transform: scale(0.92); }
+  50% { transform: scale(1.05); }
+}
+.st-offline .fx-alert { opacity: 1; animation: fx-alert-pop 1.6s ease-in-out infinite; }
+
+/* 庆祝闪光（JS 动态生成） */
+.fx-sparkle {
+  color: var(--c-accent);
+  font-size: 16px;
+  animation: fx-sparkle-pop 0.85s ease-out forwards;
+}
+@keyframes fx-sparkle-pop {
+  0% { transform: scale(0) rotate(0deg); opacity: 0; }
+  35% { opacity: 1; }
+  100% { transform: scale(1.4) rotate(120deg); opacity: 0; }
+}
+
+/* ============================================================
+   状态文本气泡
+   ============================================================ */
+.pet-status {
+  position: absolute;
+  left: 50%;
+  top: -6px;
+  transform: translateX(-50%);
+  max-width: 220px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: rgba(18, 35, 43, 0.86);
+  color: #cfe9ef;
+  font: 12px/1.5 "PingFang SC", "Microsoft YaHei", sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  pointer-events: none;
+}
+.pet-stage.show-status .pet-status { opacity: 1; }
+
+/* ============================================================
+   设置气泡面板
+   ============================================================ */
+.pet-settings {
+  position: absolute;
+  left: 50%;
+  bottom: 296px;
+  transform: translateX(-50%);
+  width: 252px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(17, 30, 38, 0.96);
+  color: #d7edf2;
+  font: 12px/1.6 "PingFang SC", "Microsoft YaHei", sans-serif;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  z-index: 10;
+}
+.pet-settings::after {
+  content: "";
+  position: absolute;
+  left: 50%; bottom: -7px;
+  transform: translateX(-50%);
+  border: 8px solid transparent;
+  border-top-color: rgba(17, 30, 38, 0.96);
+}
+.pet-settings h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--c-eye, #7ef0ff);
+}
+.pet-settings label {
+  display: block;
+  margin: 6px 0 2px;
+  color: #9db8c0;
+}
+.pet-settings input[type="text"],
+.pet-settings input[type="password"],
+.pet-settings input[type="number"],
+.pet-settings select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border: 1px solid #2c4652;
+  border-radius: 8px;
+  background: #0c1a21;
+  color: #d7edf2;
+  font: 12px/1.4 sans-serif;
+  outline: none;
+}
+.pet-settings input:focus, .pet-settings select:focus { border-color: var(--c-eye, #7ef0ff); }
+.pet-settings .row { display: flex; gap: 8px; }
+.pet-settings .row > div { flex: 1; }
+.pet-settings .check { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.pet-settings .check input { accent-color: var(--c-body, #7fd8c9); }
+.pet-settings details { margin-top: 8px; }
+.pet-settings summary { cursor: pointer; color: #9db8c0; }
+.pet-settings .actions { display: flex; gap: 8px; margin-top: 10px; }
+.pet-settings button {
+  flex: 1;
+  padding: 6px 0;
+  border: none;
+  border-radius: 9px;
+  font: 13px/1 sans-serif;
+  cursor: pointer;
+}
+.pet-settings .btn-save { background: var(--c-body, #7fd8c9); color: #0c2620; font-weight: 700; }
+.pet-settings .btn-close { background: #29414c; color: #b9d3da; }
+.pet-settings .hint { margin-top: 8px; color: #7d99a2; font-size: 11px; }

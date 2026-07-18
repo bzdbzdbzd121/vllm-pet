@@ -1,0 +1,36 @@
+appId: com.vllmpet.app
+productName: vllm-pet
+copyright: MIT
+
+directories:
+  output: out
+
+files:
+  - package.json
+  - dist/**
+  - src/main/**
+  - src/shared/**
+
+# 架构由各平台 CI 通过 CLI 指定（--x64 / --arm64），见 .github/workflows/release.yml
+
+mac:
+  category: public.app-category.utilities
+  target:
+    - dmg
+    - zip
+
+win:
+  target:
+    - nsis
+    - portable
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  shortcutName: vllm-pet
+
+linux:
+  category: Utility
+  target:
+    - AppImage
+    - deb

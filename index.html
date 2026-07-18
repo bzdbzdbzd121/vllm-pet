@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>vLLM Pet · 预览</title>
+    <style>
+      :root {
+        --eye: #7ef0ff;
+        --body: #7fd8c9;
+        --accent: #ff8a7a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "PingFang SC", "Microsoft YaHei", -apple-system, sans-serif;
+        color: #d7edf2;
+        background:
+          radial-gradient(900px 500px at 15% -10%, rgba(127, 216, 201, 0.16), transparent 60%),
+          radial-gradient(800px 500px at 90% 110%, rgba(255, 138, 122, 0.12), transparent 55%),
+          linear-gradient(160deg, #0d161d 0%, #14222c 100%);
+      }
+      .page {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 36px 24px 48px;
+      }
+      header { text-align: center; margin-bottom: 8px; }
+      header h1 {
+        margin: 0;
+        font-size: 30px;
+        letter-spacing: 1px;
+      }
+      header h1 .logo { color: var(--body); }
+      header p { margin: 8px 0 0; color: #8fb0ba; font-size: 14px; }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 300px 1fr;
+        gap: 24px;
+        margin-top: 28px;
+        align-items: start;
+      }
+      @media (max-width: 720px) {
+        .layout { grid-template-columns: 1fr; }
+      }
+
+      .stage-card {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(127, 216, 201, 0.18);
+        border-radius: 20px;
+        padding: 18px 12px 8px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      #pet-holder {
+        transform: scale(1.15);
+        transform-origin: bottom center;
+        margin-bottom: 14px;
+      }
+      .stage-card .caption { color: #7fa3ad; font-size: 12px; padding-bottom: 8px; }
+
+      .panel {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 20px;
+        padding: 20px;
+      }
+      .panel h2 {
+        margin: 0 0 12px;
+        font-size: 15px;
+        color: var(--eye);
+      }
+      .state-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+        gap: 8px;
+      }
+      .state-grid button {
+        padding: 9px 4px;
+        border-radius: 11px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: #132630;
+        color: #cfe4ea;
+        font-size: 13px;
+        cursor: pointer;
+        transition: transform 0.12s ease, border-color 0.12s ease;
+      }
+      .state-grid button:hover { transform: translateY(-1px); border-color: var(--body); }
+      .state-grid button.active {
+        background: var(--body);
+        color: #0b2b25;
+        font-weight: 700;
+        border-color: var(--body);
+      }
+
+      .live-form { display: flex; gap: 8px; margin-top: 4px; }
+      .live-form input {
+        flex: 1;
+        padding: 8px 10px;
+        border-radius: 10px;
+        border: 1px solid #2c4652;
+        background: #0c1a21;
+        color: #d7edf2;
+        font-size: 13px;
+        outline: none;
+      }
+      .live-form input:focus { border-color: var(--eye); }
+      .live-form button, .link-btn {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 10px;
+        background: var(--body);
+        color: #0b2b25;
+        font-weight: 700;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .link-btn { background: #29414c; color: #b9d3da; margin-left: 8px; }
+      .note { color: #7fa3ad; font-size: 12px; margin-top: 8px; line-height: 1.7; }
+      .note code { background: rgba(127, 240, 255, 0.12); padding: 1px 6px; border-radius: 6px; font-size: 11px; }
+
+      #snapshot {
+        margin-top: 14px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: #0a161c;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        font: 11px/1.6 "SF Mono", Menlo, monospace;
+        color: #7fc7d4;
+        white-space: pre-wrap;
+        word-break: break-all;
+        max-height: 130px;
+        overflow: auto;
+      }
+
+      /* 预览页里的设置面板改为文档流内定位 */
+      .settings-slot { position: relative; margin-top: 16px; }
+      .settings-slot .pet-settings {
+        position: static;
+        transform: none;
+        width: 100%;
+      }
+      .settings-slot .pet-settings::after { display: none; }
+
+      footer {
+        margin-top: 28px;
+        text-align: center;
+        color: #5f7e88;
+        font-size: 12px;
+        line-height: 2;
+      }
+      footer code { background: rgba(127, 240, 255, 0.1); padding: 1px 7px; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <h1><span class="logo">vLLM Pet</span> · 小V</h1>
+        <p>实时反映 vLLM 推理服务状态的桌面宠物 —— 空闲打盹，推理时挥汗狂奔</p>
+      </header>
+
+      <div class="layout">
+        <div class="stage-card">
+          <div id="pet-holder"></div>
+          <div class="caption">桌宠实时预览（与桌面窗口一致）</div>
+        </div>
+
+        <div>
+          <div class="panel">
+            <h2>🎛️ 状态演示</h2>
+            <div class="state-grid" id="state-grid"></div>
+            <div id="snapshot">等待状态…</div>
+          </div>
+
+          <div class="panel" style="margin-top:16px">
+            <h2>🔌 直连真实服务（可选）</h2>
+            <div class="live-form">
+              <input id="api-base" type="text" placeholder="http://127.0.0.1:8000" />
+              <button id="btn-live">连接</button>
+              <button id="btn-settings" class="link-btn" type="button">设置</button>
+            </div>
+            <div class="note">
+              浏览器直连受 CORS 限制，跨源失败属正常现象；桌宠桌面版在主进程轮询，不受此限制。<br />
+              本地快速体验：<code>npm run mock</code> 启动一个状态会周期性变化的假 vLLM 服务。
+            </div>
+            <div class="settings-slot" id="settings-slot"></div>
+          </div>
+        </div>
+      </div>
+
+      <footer>
+        桌面版：<code>npm run dev:desktop</code> 开发调试 · <code>npm start</code> 运行 · <code>npm run dist</code> 打包安装包<br />
+        自定义皮肤：把 skin.json 放进用户目录 <code>skins/</code>，详见 src/renderer/skins/README.md
+      </footer>
+    </div>
+
+    <script type="module" src="/src/renderer/preview-main.js"></script>
+  </body>
+</html>

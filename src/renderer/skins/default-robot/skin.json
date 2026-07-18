@@ -1,0 +1,17 @@
+{
+  "name": "default-robot",
+  "displayName": "小V · 默认机器人",
+  "version": 1,
+  "palette": {
+    "body": "#7fd8c9",
+    "bodyShade": "#4fb3a1",
+    "face": "#12232b",
+    "eye": "#7ef0ff",
+    "accent": "#ff8a7a",
+    "glow": "#9ff2ff"
+  },
+  "animations": {
+    "bobMs": { "idle": 3200, "sleeping": 5200, "connecting": 1800, "busy-1": 2200, "busy-2": 1400, "busy-3": 880, "offline": 5200 },
+    "blinkMs": 4400
+  }
+}
