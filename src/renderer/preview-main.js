@@ -25,12 +25,17 @@ async function boot() {
   const holder = document.getElementById('pet-holder')
   const pet = new PetView(holder, { skin, scale: 1 })
   const snapshotEl = document.getElementById('snapshot')
+  let statusEnabled = config.showStatus !== false
+  let lastStatusText = ''
 
   const machine = new PetStateMachine({
     idleSleepMinutes: config.idleSleepMinutes ?? 10,
     stateMap: config.stateMap,
     onVisualState: (visual) => pet.setState(visual),
-    onStatusLine: (text) => pet.setStatusLine(text),
+    onStatusLine: (text) => {
+      lastStatusText = text
+      pet.setStatusLine(statusEnabled ? text : '')
+    },
     onCelebrate: () => pet.celebrate()
   })
   mock.start((snap) => {
@@ -104,6 +109,8 @@ async function boot() {
     onSaved: async (saved) => {
       machine.setIdleSleepMinutes(saved.idleSleepMinutes ?? 10)
       machine.setStateMap(saved.stateMap)
+      statusEnabled = saved.showStatus !== false
+      pet.setStatusLine(statusEnabled ? lastStatusText : '')
       pet.applySkin(await resolveSkin(saved.skin, null))
       Object.assign(config, saved)
     }

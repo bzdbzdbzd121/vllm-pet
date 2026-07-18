@@ -311,6 +311,11 @@ if (!gotLock) {
     if (SMOKE && process.env.VLLM_PET_SMOKE_APIBASE) {
       store.save({ apiBase: process.env.VLLM_PET_SMOKE_APIBASE })
     }
+    // 冒烟模式可预置缩放，验证放大后状态文本布局
+    if (SMOKE && process.env.VLLM_PET_SMOKE_SCALE) {
+      const s = Number(process.env.VLLM_PET_SMOKE_SCALE)
+      if (Number.isFinite(s) && s > 0) store.save({ window: { scale: s } })
+    }
     registerIpc()
     createWindow()
     if (!SMOKE) {

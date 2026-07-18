@@ -81,10 +81,11 @@ export class PetView {
     this.stage.classList.toggle('show-status', Boolean(text))
   }
 
-  /** 整体缩放（宠物窗口内按 config.window.scale 缩放） */
+  /** 整体缩放：缩放整个舞台（机器人+特效+状态文本一起），状态文本始终在头顶上方 */
   setScale(scale) {
     const s = Number(scale) > 0 ? Number(scale) : 1
-    this.scaleWrap.style.transform = `scale(${s})`
+    this.stage.style.transform = `scale(${s})`
+    this.stage.style.transformOrigin = '50% 100%'
   }
 
   /** 运行时换肤 */

@@ -91,6 +91,7 @@ export class SettingsPanel {
           <input type="number" name="scale" min="0.6" max="2" step="0.1" value="${config.window?.scale ?? 1}">
         </div>
       </div>
+      <div class="check"><input type="checkbox" name="showStatus" ${config.showStatus !== false ? 'checked' : ''}><span>显示状态文本（宠物上方的气泡）</span></div>
       <div class="check"><input type="checkbox" name="alwaysOnTop" ${config.window?.alwaysOnTop !== false ? 'checked' : ''}><span>窗口置顶</span></div>
       <div class="check"><input type="checkbox" name="clickThrough" ${config.window?.clickThrough ? 'checked' : ''}><span>鼠标穿透（托盘菜单可恢复）</span></div>
 
@@ -115,6 +116,7 @@ export class SettingsPanel {
         apiKey: get('apiKey').value.trim(),
         pollIntervalMs: num('pollIntervalMs', 2000),
         skin: get('skin').value,
+        showStatus: get('showStatus').checked,
         thresholds: {
           light: num('tLight', 1),
           medium: num('tMedium', 4),

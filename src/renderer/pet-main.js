@@ -18,13 +18,20 @@ async function boot() {
 
   const app = document.getElementById('app')
   const pet = new PetView(app, { skin, scale: config.window?.scale ?? 1 })
-  pet.setStatusLine(config.apiBase ? '连接中…' : '尚未配置服务地址，右键打开设置')
+
+  let statusEnabled = config.showStatus !== false
+  let lastStatusText = ''
+  const applyStatusLine = (text) => {
+    lastStatusText = text
+    pet.setStatusLine(statusEnabled ? text : '')
+  }
+  applyStatusLine(config.apiBase ? '连接中…' : '尚未配置服务地址，右键打开设置')
 
   const machine = new PetStateMachine({
     idleSleepMinutes: config.idleSleepMinutes ?? 10,
     stateMap: config.stateMap,
     onVisualState: (visual) => pet.setState(visual),
-    onStatusLine: (text) => pet.setStatusLine(text),
+    onStatusLine: applyStatusLine,
     onCelebrate: () => pet.celebrate()
   })
 
@@ -34,6 +41,8 @@ async function boot() {
   const applyConfig = async (saved) => {
     machine.setIdleSleepMinutes(saved.idleSleepMinutes ?? 10)
     machine.setStateMap(saved.stateMap)
+    statusEnabled = saved.showStatus !== false
+    pet.setStatusLine(statusEnabled ? lastStatusText : '')
     pet.setScale(saved.window?.scale ?? 1)
     pet.applySkin(await resolveSkin(saved.skin, bridge))
   }
