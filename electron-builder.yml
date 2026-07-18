@@ -10,6 +10,7 @@ files:
   - dist/**
   - src/main/**
   - src/shared/**
+  - build/icons/**
 
 # 架构由各平台 CI 通过 CLI 指定（--x64 / --arm64），见 .github/workflows/release.yml
 
