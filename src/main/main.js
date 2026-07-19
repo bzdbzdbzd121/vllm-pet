@@ -17,8 +17,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(__dirname, '..', '..')
 const BASE_W = 240
 const BASE_H = 280
-/* 状态气泡放在舞台下方：showStatus 开启时窗口底部额外留白（逻辑像素） */
-const STATUS_H = 34
+/* 状态气泡已收入舞台底部留白区，窗口无需额外加高 */
+const STATUS_H = 0
 
 /** 按缩放与是否显示状态文本计算窗口尺寸 */
 function windowSize(config) {

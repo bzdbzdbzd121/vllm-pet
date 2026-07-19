@@ -1,5 +1,5 @@
 <svg class="r-svg" viewBox="0 0 240 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="小V">
-  <ellipse class="r-shadow" cx="120" cy="262" rx="44" ry="9"/>
+  <ellipse class="r-shadow" cx="120" cy="232" rx="44" ry="9"/>
   <g class="r-hover">
     <g class="r-head">
       <path class="r-antenna-stem" d="M120 66 L120 46"/>
