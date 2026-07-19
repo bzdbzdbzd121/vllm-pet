@@ -282,8 +282,8 @@
 .pet-status {
   position: absolute;
   left: 50%;
-  top: -6px;
-  transform: translateX(-50%);
+  top: 54px;
+  transform: translate(-50%, -100%);
   max-width: 220px;
   padding: 4px 10px;
   border-radius: 12px;

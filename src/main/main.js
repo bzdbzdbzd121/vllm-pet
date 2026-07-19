@@ -278,6 +278,8 @@ function runSmokeCapture() {
   }, 20000)
 
   win.webContents.once('did-finish-load', () => {
+    // 默认 2.5s；需要捕获离线等延迟状态时用 VLLM_PET_SMOKE_DELAY 加大
+    const delay = Math.max(0, Number(process.env.VLLM_PET_SMOKE_DELAY) || 2500)
     setTimeout(async () => {
       try {
         const image = await win.webContents.capturePage()
@@ -331,7 +333,10 @@ if (!gotLock) {
       // 冒烟模式仍创建 poller 以验证装配；apiBase 默认空 → 不会访问外网
       poller = new PollerService({
         getConfig: () => store.load(),
-        onStatus: (snap) => win?.webContents.send('status:update', snap)
+        onStatus: (snap) => {
+          console.log('[smoke] state =', snap.state, 'err =', snap.error || '')
+          win?.webContents.send('status:update', snap)
+        }
       })
       poller.start()
     }

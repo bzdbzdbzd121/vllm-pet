@@ -46,10 +46,12 @@
     <g transform="translate(174,78)"><text class="fx-zzz z1">Z</text></g>
     <g transform="translate(188,58)"><text class="fx-zzz z2">Z</text></g>
     <g transform="translate(202,38)"><text class="fx-zzz z3">Z</text></g>
-    <g class="fx-alert" transform="translate(166,32)">
-      <circle class="fx-alert-bg" r="15"/>
-      <path class="fx-alert-tail" d="M-9 11 L-3 21 L2 12 Z"/>
-      <text class="fx-alert-text" y="5.5">!</text>
+    <g transform="translate(166,32)">
+      <g class="fx-alert">
+        <circle class="fx-alert-bg" r="15"/>
+        <path class="fx-alert-tail" d="M-9 11 L-3 21 L2 12 Z"/>
+        <text class="fx-alert-text" y="5.5">!</text>
+      </g>
     </g>
   </g>
   <g class="r-sparkles"></g>

@@ -5,6 +5,13 @@
  *
  * 前置：先执行 npm run build。
  * 用法：node scripts/smoke.mjs
+ * 环境变量：
+ *   VLLM_PET_SMOKE_APIBASE  预置服务地址（通常指向 mock-vllm）
+ *   VLLM_PET_SMOKE_SCALE    预置体型缩放（如 0.7 / 1.5）
+ *   VLLM_PET_SMOKE_PAGE     指定加载页面（默认 pet.html）
+ *   VLLM_PET_SMOKE_SIZE     指定窗口尺寸（如 480x560）
+ *   VLLM_PET_SMOKE_DELAY    did-finish-load 后延迟多少毫秒再截图（默认 2500，
+ *                           验证离线等延迟状态时加大，并配合 pkill mock）
  */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
