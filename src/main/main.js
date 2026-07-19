@@ -17,6 +17,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(__dirname, '..', '..')
 const BASE_W = 240
 const BASE_H = 280
+/* 状态气泡放在舞台下方：showStatus 开启时窗口底部额外留白（逻辑像素） */
+const STATUS_H = 34
+
+/** 按缩放与是否显示状态文本计算窗口尺寸 */
+function windowSize(config) {
+  const scale = Number(config.window?.scale) > 0 ? Number(config.window.scale) : 1
+  const extra = config.showStatus === false ? 0 : STATUS_H
+  return [Math.round(BASE_W * scale), Math.round((BASE_H + extra) * scale)]
+}
 
 const SMOKE = process.env.VLLM_PET_SMOKE === '1'
 const DEV = process.env.VLLM_PET_DEV === '1'
@@ -42,9 +51,7 @@ function createWindow() {
   const smokeSize = SMOKE && process.env.VLLM_PET_SMOKE_SIZE
     ? process.env.VLLM_PET_SMOKE_SIZE.split('x').map(Number)
     : null
-  const scale = Number(config.window?.scale) > 0 ? Number(config.window.scale) : 1
-  const w = smokeSize?.[0] || Math.round(BASE_W * scale)
-  const h = smokeSize?.[1] || Math.round(BASE_H * scale)
+  const [w, h] = smokeSize || windowSize(config)
 
   let x = config.window?.x
   let y = config.window?.y
@@ -91,8 +98,7 @@ function createWindow() {
 /** 配置变更后即时应用窗口相关字段 */
 function applyWindowConfig(config) {
   if (!win) return
-  const scale = Number(config.window?.scale) > 0 ? Number(config.window.scale) : 1
-  win.setSize(Math.round(BASE_W * scale), Math.round(BASE_H * scale))
+  win.setSize(...windowSize(config))
   win.setAlwaysOnTop(config.window?.alwaysOnTop !== false, 'screen-saver')
   win.setIgnoreMouseEvents(!!config.window?.clickThrough, { forward: true })
   if (typeof config.window?.opacity === 'number') win.setOpacity(config.window.opacity)

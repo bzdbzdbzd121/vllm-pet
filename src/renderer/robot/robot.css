@@ -281,8 +281,8 @@
    ============================================================ */
 .pet-status {
   position: absolute;
-  left: 50%;
-  top: 54px;
+  /* 放在舞台下方留白区（主进程为窗口底部加高 34px*缩放），不再遮挡宠物本体 */
+  top: calc(100% + 30px); left: 50%;
   transform: translate(-50%, -100%);
   max-width: 220px;
   padding: 4px 10px;
