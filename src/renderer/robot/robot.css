@@ -49,6 +49,7 @@
 .r-eye-closed { stroke: var(--c-eye); stroke-width: 4; fill: none; stroke-linecap: round; opacity: 0; }
 .r-eye-squeeze { stroke: var(--c-eye); stroke-width: 5; fill: none; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
 .r-mouth { stroke: var(--c-eye); stroke-width: 4; fill: none; stroke-linecap: round; }
+.r-mouth-bar { stroke: var(--c-eye); stroke-width: 5; fill: none; stroke-linecap: round; opacity: 0; }
 .r-cheek { fill: var(--c-accent); opacity: 0.5; }
 .r-arm { fill: var(--c-body-shade); }
 .r-body-shell { fill: var(--c-body); stroke: var(--c-body-shade); stroke-width: 3; }
@@ -143,6 +144,8 @@
 .st-busy-3 .r-hover { animation: r-bob 0.88s ease-in-out infinite, r-shake 0.2s linear infinite; }
 .st-busy-3 .r-eye-pill { opacity: 0; }
 .st-busy-3 .r-eye-squeeze { opacity: 1; }
+.st-busy-3 .r-mouth { opacity: 0; }
+.st-busy-3 .r-mouth-bar { opacity: 1; }
 .st-busy-3 .r-face { animation: r-face-flicker 0.9s ease-in-out infinite; }
 .st-busy-3 .r-chest { animation: r-chest-blink 0.55s ease-in-out infinite; }
 .st-busy-3 .r-arm-left { animation: r-bob 0.88s ease-in-out infinite; }
@@ -163,31 +166,20 @@
 .is-celebrating .r-cheek { opacity: 0.9; }
 
 /* ============================================================
-   粒子特效层（HTML overlay）
+   粒子特效层（SVG 内 .r-fx 分组 —— 随机器人几何一起缩放，位置不漂移）
+   注意：SVG 元素参与 CSS transform 动画时需要 transform-box: fill-box，
+   且定位一律用 SVG 坐标（viewBox 0 0 240 280），不要用 px 定位。
    ============================================================ */
-.pet-fx {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  overflow: visible;
-}
-.pet-fx > span, .pet-fx > i {
-  position: absolute;
-  display: block;
-  pointer-events: none;
-}
+.r-fx, .r-fx *, .r-sparkles, .r-sparkles * { pointer-events: none; }
 
 /* 蒸汽（中载/重载，头顶两侧） */
 .fx-steam {
-  width: 12px; height: 12px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(255,255,255,0.9), rgba(255,255,255,0));
+  fill: #ffffff;
   opacity: 0;
+  filter: blur(1.6px);
+  transform-box: fill-box;
+  transform-origin: center;
 }
-.fx-steam.s1 { left: 64px; top: 58px; }
-.fx-steam.s2 { left: 168px; top: 58px; }
-.fx-steam.s3 { left: 78px; top: 48px; }
-.fx-steam.s4 { left: 156px; top: 48px; }
 @keyframes fx-steam-rise {
   0% { transform: translateY(0) scale(0.4); opacity: 0; }
   25% { opacity: 0.85; }
@@ -201,13 +193,11 @@
 
 /* 汗滴（中载以上） */
 .fx-sweat {
-  width: 7px; height: 10px;
-  border-radius: 50% 50% 60% 60% / 40% 40% 70% 70%;
-  background: #8fd8ff;
+  fill: #8fd8ff;
   opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
 }
-.fx-sweat.w1 { left: 186px; top: 84px; }
-.fx-sweat.w2 { left: 46px; top: 92px; }
 @keyframes fx-sweat-drop {
   0% { transform: translateY(-4px) scale(0.6); opacity: 0; }
   30% { opacity: 0.95; }
@@ -219,14 +209,11 @@
 
 /* 速度线（重载） */
 .fx-speed {
-  width: 26px; height: 3px;
-  border-radius: 2px;
-  background: linear-gradient(90deg, transparent, var(--c-glow));
+  fill: var(--c-glow);
   opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
 }
-.fx-speed.l1 { left: 8px; top: 130px; }
-.fx-speed.l2 { left: 14px; top: 160px; }
-.fx-speed.l3 { right: 8px; top: 145px; transform: scaleX(-1); }
 @keyframes fx-speed-flash {
   0%, 100% { opacity: 0; transform: translateX(0); }
   50% { opacity: 0.8; transform: translateX(-6px); }
@@ -238,13 +225,14 @@
 /* 睡觉 Zzz */
 .fx-zzz {
   font: 700 18px/1 "Comic Sans MS", "PingFang SC", sans-serif;
-  color: var(--c-glow);
-  text-shadow: 0 0 6px rgba(159, 242, 255, 0.6);
+  fill: var(--c-glow);
   opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
 }
-.fx-zzz.z1 { left: 168px; top: 66px; font-size: 14px; }
-.fx-zzz.z2 { left: 182px; top: 48px; font-size: 18px; }
-.fx-zzz.z3 { left: 196px; top: 28px; font-size: 23px; }
+.fx-zzz.z1 { font-size: 14px; }
+.fx-zzz.z2 { font-size: 18px; }
+.fx-zzz.z3 { font-size: 23px; }
 @keyframes fx-zzz-float {
   0% { transform: translate(0, 6px) rotate(-6deg); opacity: 0; }
   30% { opacity: 0.95; }
@@ -256,24 +244,17 @@
 
 /* 离线感叹号气泡 */
 .fx-alert {
-  left: 176px; top: 40px;
-  min-width: 30px; height: 30px;
-  border-radius: 15px;
-  background: #ffd166;
-  color: #5b4500;
-  font: 800 18px/30px sans-serif;
-  text-align: center;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   opacity: 0;
   transform: scale(0.5);
+  transform-box: fill-box;
+  transform-origin: center;
 }
-.fx-alert::after {
-  content: "";
-  position: absolute;
-  left: 4px; bottom: -5px;
-  border: 6px solid transparent;
-  border-top-color: #ffd166;
-  border-left-color: #ffd166;
+.fx-alert-bg { fill: #ffd166; }
+.fx-alert-tail { fill: #ffd166; }
+.fx-alert-text {
+  fill: #5b4500;
+  font: 800 18px/1 sans-serif;
+  text-anchor: middle;
 }
 @keyframes fx-alert-pop {
   0%, 100% { transform: scale(0.92); }
@@ -281,10 +262,12 @@
 }
 .st-offline .fx-alert { opacity: 1; animation: fx-alert-pop 1.6s ease-in-out infinite; }
 
-/* 庆祝闪光（JS 动态生成） */
+/* 庆祝闪光（JS 动态生成的 SVG <text>，追加到 .r-sparkles 分组） */
 .fx-sparkle {
-  color: var(--c-accent);
+  fill: var(--c-accent);
   font-size: 16px;
+  transform-box: fill-box;
+  transform-origin: center;
   animation: fx-sparkle-pop 0.85s ease-out forwards;
 }
 @keyframes fx-sparkle-pop {

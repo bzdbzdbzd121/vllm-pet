@@ -20,6 +20,7 @@
         <path class="r-eye-squeeze r-eye-squeeze-right" d="M145 101 L133 111 L145 121"/>
       </g>
       <path class="r-mouth" d="M110 128 Q120 134 130 128"/>
+      <path class="r-mouth-bar" d="M109 129 L131 129"/>
       <circle class="r-cheek r-cheek-left" cx="86" cy="126" r="5"/>
       <circle class="r-cheek r-cheek-right" cx="154" cy="126" r="5"/>
     </g>
@@ -31,4 +32,25 @@
       <circle class="r-chest-hl" cx="120" cy="196" r="3.5"/>
     </g>
   </g>
+  <!-- 粒子特效层：放在 SVG 内，随机器人几何一起缩放，位置永不漂移 -->
+  <g class="r-fx">
+    <circle class="fx-steam s1" cx="68" cy="64" r="7"/>
+    <circle class="fx-steam s2" cx="174" cy="64" r="7"/>
+    <circle class="fx-steam s3" cx="82" cy="52" r="7"/>
+    <circle class="fx-steam s4" cx="160" cy="52" r="7"/>
+    <g transform="translate(190,92)"><path class="fx-sweat w1" d="M0 -6 C2.8 -2 4 0.5 4 2.5 A4 4 0 1 1 -4 2.5 C-4 0.5 -2.8 -2 0 -6 Z"/></g>
+    <g transform="translate(50,100)"><path class="fx-sweat w2" d="M0 -6 C2.8 -2 4 0.5 4 2.5 A4 4 0 1 1 -4 2.5 C-4 0.5 -2.8 -2 0 -6 Z"/></g>
+    <g transform="translate(30,134)"><rect class="fx-speed l1" x="-13" y="-1.5" width="26" height="3" rx="1.5"/></g>
+    <g transform="translate(34,164)"><rect class="fx-speed l2" x="-13" y="-1.5" width="26" height="3" rx="1.5"/></g>
+    <g transform="translate(210,149)"><rect class="fx-speed l3" x="-13" y="-1.5" width="26" height="3" rx="1.5"/></g>
+    <g transform="translate(174,78)"><text class="fx-zzz z1">Z</text></g>
+    <g transform="translate(188,58)"><text class="fx-zzz z2">Z</text></g>
+    <g transform="translate(202,38)"><text class="fx-zzz z3">Z</text></g>
+    <g class="fx-alert" transform="translate(166,32)">
+      <circle class="fx-alert-bg" r="15"/>
+      <path class="fx-alert-tail" d="M-9 11 L-3 21 L2 12 Z"/>
+      <text class="fx-alert-text" y="5.5">!</text>
+    </g>
+  </g>
+  <g class="r-sparkles"></g>
 </svg>

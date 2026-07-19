@@ -27,21 +27,10 @@ export class PetView {
     this.scaleWrap.className = 'pet-scale'
     this.scaleWrap.innerHTML = skin.robotSvg
 
-    this.fx = document.createElement('div')
-    this.fx.className = 'pet-fx'
-    this.fx.innerHTML = [
-      '<span class="fx-steam s1"></span><span class="fx-steam s2"></span>',
-      '<span class="fx-steam s3"></span><span class="fx-steam s4"></span>',
-      '<span class="fx-sweat w1"></span><span class="fx-sweat w2"></span>',
-      '<i class="fx-speed l1"></i><i class="fx-speed l2"></i><i class="fx-speed l3"></i>',
-      '<span class="fx-zzz z1">Z</span><span class="fx-zzz z2">Z</span><span class="fx-zzz z3">Z</span>',
-      '<span class="fx-alert">!</span>'
-    ].join('')
-
     this.statusEl = document.createElement('div')
     this.statusEl.className = 'pet-status'
 
-    this.stage.append(this.scaleWrap, this.fx, this.statusEl)
+    this.stage.append(this.scaleWrap, this.statusEl)
     container.append(this.stage)
 
     applySkinToStage(this.stage, skin)
@@ -102,17 +91,19 @@ export class PetView {
   }
 
   _burstSparkles() {
+    const layer = this.scaleWrap.querySelector('.r-sparkles')
+    if (!layer) return
     const spots = [
       [52, 60], [178, 54], [36, 130], [196, 128], [112, 26], [160, 220]
     ]
     for (const [x, y] of spots) {
-      const el = document.createElement('span')
-      el.className = 'fx-sparkle'
-      el.textContent = '✦'
-      el.style.left = `${x}px`
-      el.style.top = `${y}px`
+      const el = document.createElementNS('http://www.w3.org/2000/svg', 'text')
+      el.setAttribute('class', 'fx-sparkle')
+      el.setAttribute('x', String(x))
+      el.setAttribute('y', String(y))
       el.style.animationDelay = `${Math.random() * 0.25}s`
-      this.fx.append(el)
+      el.textContent = '✦'
+      layer.append(el)
       setTimeout(() => el.remove(), 1200)
     }
   }
