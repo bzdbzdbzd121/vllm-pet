@@ -1,0 +1,87 @@
+<svg class="r-svg" viewBox="0 0 240 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="小V·女仆机娘">
+  <ellipse class="r-shadow" cx="120" cy="238" rx="40" ry="7"/>
+  <g class="r-hover">
+    <!-- 袜子与鞋（无钩子，配色跟随调色板变量） -->
+    <rect x="100" y="214" width="14" height="22" rx="6" style="fill:var(--c-body)"/>
+    <rect x="126" y="214" width="14" height="22" rx="6" style="fill:var(--c-body)"/>
+    <ellipse cx="107" cy="236" rx="10" ry="5" style="fill:var(--c-body-shade)"/>
+    <ellipse cx="133" cy="236" rx="10" ry="5" style="fill:var(--c-body-shade)"/>
+    <!-- 手臂（黑袖子） -->
+    <rect class="r-arm r-arm-left" x="66" y="172" width="16" height="32" rx="8"/>
+    <rect class="r-arm r-arm-right" x="158" y="172" width="16" height="32" rx="8"/>
+    <!-- 女仆黑裙 -->
+    <path d="M86 170 C100 162 140 162 154 170 L164 214 C136 226 104 226 76 214 Z" style="fill:var(--c-body-shade)"/>
+    <!-- 白围裙（主体钩子） -->
+    <path class="r-body-shell" d="M96 174 Q120 168 144 174 L149 206 Q120 218 91 206 Z"/>
+    <!-- 围裙蝴蝶结（胸口灯钩子） -->
+    <path class="r-chest" d="M120 184 L111 178 L111 190 Z M120 184 L129 178 L129 190 Z"/>
+    <circle class="r-chest-hl" cx="120" cy="184" r="2"/>
+    <g class="r-head">
+      <!-- 脸蛋（肤色的"屏幕"） -->
+      <path class="r-face" d="M88 108 C88 100 96 96 120 96 C144 96 152 100 152 108 C154 132 148 152 120 158 C92 152 86 132 88 108 Z"/>
+      <!-- 白色短发（头壳钩子：刘海锯齿 + 两侧发束） -->
+      <path class="r-head-shell" d="M120 44
+        C82 44 60 68 58 104
+        C56 128 54 150 62 164
+        C68 172 80 174 86 168
+        C82 150 84 128 88 112
+        Q96 104 104 110
+        Q112 100 120 108
+        Q128 100 136 110
+        Q144 104 152 112
+        C156 128 158 150 154 168
+        C160 174 172 172 178 164
+        C186 150 184 128 182 104
+        C180 68 158 44 120 44 Z"/>
+      <!-- 女仆头饰（褶皱发带） -->
+      <path d="M70 62 Q70 44 88 42 Q88 34 104 34 Q120 28 136 34 Q152 34 152 42 Q170 44 170 62 Q120 50 70 62 Z"
+            style="fill:#ffffff;stroke:var(--c-body-shade);stroke-width:3"/>
+      <!-- 机械耳饰 = 状态指示灯（天线钩子组） -->
+      <path class="r-antenna-stem" d="M178 118 L186 112"/>
+      <circle class="r-antenna-glow" cx="188" cy="106" r="12"/>
+      <circle cx="188" cy="106" r="9" style="fill:#ffffff;stroke:var(--c-body-shade);stroke-width:3"/>
+      <circle class="r-antenna-bulb" cx="188" cy="106" r="5"/>
+      <!-- 蝴蝶结（耳朵钩子） -->
+      <path class="r-ear r-ear-left" d="M60 100 L50 93 L52 105 Z M60 100 L70 93 L68 105 Z"/>
+      <path class="r-ear r-ear-right" d="M180 88 L171 82 L173 94 Z M180 88 L189 82 L187 94 Z"/>
+      <!-- 大眼睛（眨眼缩放作用于整体） -->
+      <g class="r-eyes">
+        <ellipse class="r-eye-pill r-eye-left" cx="103" cy="128" rx="7" ry="9.5"/>
+        <ellipse class="r-eye-pill r-eye-right" cx="137" cy="128" rx="7" ry="9.5"/>
+        <path class="r-eye-arc r-eye-arc-left" d="M95 128 Q103 118 111 128"/>
+        <path class="r-eye-arc r-eye-arc-right" d="M129 128 Q137 118 145 128"/>
+        <path class="r-eye-closed r-eye-closed-left" d="M95 127 Q103 132 111 127"/>
+        <path class="r-eye-closed r-eye-closed-right" d="M129 127 Q137 132 145 127"/>
+        <path class="r-eye-squeeze r-eye-squeeze-left" d="M97 119 L109 128 L97 137"/>
+        <path class="r-eye-squeeze r-eye-squeeze-right" d="M143 119 L131 128 L143 137"/>
+      </g>
+      <path class="r-mouth" d="M112 144 Q120 150 128 144"/>
+      <path class="r-mouth-bar" d="M111 145 L129 145"/>
+      <circle class="r-cheek r-cheek-left" cx="94" cy="141" r="4.5"/>
+      <circle class="r-cheek r-cheek-right" cx="146" cy="141" r="4.5"/>
+    </g>
+  </g>
+  <!-- 粒子特效层：与默认机器人同结构，位置按女仆几何调整 -->
+  <g class="r-fx">
+    <circle class="fx-steam s1" cx="64" cy="52" r="7"/>
+    <circle class="fx-steam s2" cx="176" cy="52" r="7"/>
+    <circle class="fx-steam s3" cx="82" cy="40" r="7"/>
+    <circle class="fx-steam s4" cx="158" cy="40" r="7"/>
+    <g transform="translate(198,100)"><path class="fx-sweat w1" d="M0 -6 C2.8 -2 4 0.5 4 2.5 A4 4 0 1 1 -4 2.5 C-4 0.5 -2.8 -2 0 -6 Z"/></g>
+    <g transform="translate(42,108)"><path class="fx-sweat w2" d="M0 -6 C2.8 -2 4 0.5 4 2.5 A4 4 0 1 1 -4 2.5 C-4 0.5 -2.8 -2 0 -6 Z"/></g>
+    <g transform="translate(28,158)"><rect class="fx-speed l1" x="-13" y="-1.5" width="26" height="3" rx="1.5"/></g>
+    <g transform="translate(32,188)"><rect class="fx-speed l2" x="-13" y="-1.5" width="26" height="3" rx="1.5"/></g>
+    <g transform="translate(212,150)"><rect class="fx-speed l3" x="-13" y="-1.5" width="26" height="3" rx="1.5"/></g>
+    <g transform="translate(182,80)"><text class="fx-zzz z1">Z</text></g>
+    <g transform="translate(196,60)"><text class="fx-zzz z2">Z</text></g>
+    <g transform="translate(210,40)"><text class="fx-zzz z3">Z</text></g>
+    <g transform="translate(178,34)">
+      <g class="fx-alert">
+        <circle class="fx-alert-bg" r="15"/>
+        <path class="fx-alert-tail" d="M-9 11 L-3 21 L2 12 Z"/>
+        <text class="fx-alert-text" y="5.5">!</text>
+      </g>
+    </g>
+  </g>
+  <g class="r-sparkles"></g>
+</svg>

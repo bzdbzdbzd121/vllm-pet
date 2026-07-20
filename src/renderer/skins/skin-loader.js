@@ -12,6 +12,8 @@ import sakuraPinkJson from './sakura-pink/skin.json'
 import oceanBlueJson from './ocean-blue/skin.json'
 import sunnyOrangeJson from './sunny-orange/skin.json'
 import graphiteDarkJson from './graphite-dark/skin.json'
+import maidRoboJson from './maid-robo/skin.json'
+import maidRoboSvg from './maid-robo/robot.svg?raw'
 
 export const BUILTIN_SKIN = Object.freeze({
   ...defaultSkinJson,
@@ -19,8 +21,8 @@ export const BUILTIN_SKIN = Object.freeze({
   robotSvg: defaultRobotSvg
 })
 
-/** 内置换色皮肤：与默认皮肤共用 SVG 与动画节奏，仅覆盖调色板 */
-function builtinVariant(json) {
+/** 内置变体：默认共用默认 SVG 与动画节奏；带自定义 SVG 的造型皮肤（如女仆机娘）传入第二个参数 */
+function builtinVariant(json, robotSvg = defaultRobotSvg) {
   return Object.freeze({
     ...json,
     builtin: true,
@@ -29,17 +31,18 @@ function builtinVariant(json) {
       bobMs: { ...defaultSkinJson.animations.bobMs, ...(json.animations?.bobMs || {}) },
       blinkMs: json.animations?.blinkMs ?? defaultSkinJson.animations.blinkMs
     },
-    robotSvg: defaultRobotSvg
+    robotSvg
   })
 }
 
-/** 全部内置皮肤（默认 + 换色变体），新增内置皮肤在此登记 */
+/** 全部内置皮肤（默认 + 换色变体 + 造型皮肤），新增内置皮肤在此登记 */
 export const BUILTIN_SKINS = Object.freeze([
   BUILTIN_SKIN,
   builtinVariant(sakuraPinkJson),
   builtinVariant(oceanBlueJson),
   builtinVariant(sunnyOrangeJson),
-  builtinVariant(graphiteDarkJson)
+  builtinVariant(graphiteDarkJson),
+  builtinVariant(maidRoboJson, maidRoboSvg)
 ])
 
 /** 应用皮肤到舞台元素：调色板 → CSS 变量，动画节奏 → 状态时长表 */

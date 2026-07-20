@@ -18,9 +18,14 @@ const DEMOS = [
 ]
 
 async function boot() {
+  // URL hash 可预置皮肤与状态，便于冒烟截图与分享演示：index.html#skin=maid-robo&state=sleeping
+  const hashParams = new URLSearchParams(location.hash.slice(1))
+  const hashSkin = hashParams.get('skin')
+  const hashState = hashParams.get('state')
+
   const mock = new MockStatusProvider()
   const config = await mock.getConfig()
-  const skin = await resolveSkin(config.skin, null)
+  const skin = await resolveSkin(hashSkin || config.skin, null)
 
   const holder = document.getElementById('pet-holder')
   const pet = new PetView(holder, { skin, scale: 1 })
@@ -119,8 +124,30 @@ async function boot() {
     settings.toggle(document.getElementById('settings-slot'))
   })
 
-  activate('idle')
-  mock.push(DEMOS[0].snap)
+  // 初始状态：hash 指定优先，否则默认空闲
+  if (hashState) {
+    const demo = DEMOS.find((d) => d.key === hashState)
+    if (demo) {
+      activate(demo.key)
+      mock.push(demo.snap)
+    } else if (hashState === 'sleeping') {
+      activate('__sleep')
+      mock.push(DEMOS[0].snap)
+      // 等状态机处理完初始快照后再切睡觉，避免被覆盖
+      setTimeout(() => {
+        pet.setState('sleeping')
+        pet.setStatusLine('Zzz…（连续空闲后自动进入）')
+      }, 100)
+    } else if (hashState === 'celebrate') {
+      activate('idle')
+      mock.push(DEMOS[0].snap)
+      // 循环庆祝，演示/截图任意时刻都能命中
+      setInterval(() => pet.celebrate(), 1400)
+    }
+  } else {
+    activate('idle')
+    mock.push(DEMOS[0].snap)
+  }
 }
 
 boot().catch((err) => {

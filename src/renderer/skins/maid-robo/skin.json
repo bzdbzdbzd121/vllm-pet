@@ -1,0 +1,13 @@
+{
+  "name": "maid-robo",
+  "displayName": "小V · 女仆机娘",
+  "version": 1,
+  "palette": {
+    "body": "#f5f6fa",
+    "bodyShade": "#2f333a",
+    "face": "#ffe4d6",
+    "eye": "#35d0e0",
+    "accent": "#ff8a7a",
+    "glow": "#9ff2ff"
+  }
+}

@@ -87,7 +87,10 @@ function createWindow() {
   if (DEV) {
     win.loadURL('http://localhost:5173/pet.html')
   } else {
-    win.loadFile(path.join(ROOT, 'dist', smokePage || 'pet.html'))
+    // 冒烟可经 VLLM_PET_SMOKE_HASH 带 hash（预览页 #skin=..&state=..）
+    win.loadFile(path.join(ROOT, 'dist', smokePage || 'pet.html'), {
+      hash: SMOKE ? (process.env.VLLM_PET_SMOKE_HASH || '') : ''
+    })
   }
 
   win.on('closed', () => { win = null })
