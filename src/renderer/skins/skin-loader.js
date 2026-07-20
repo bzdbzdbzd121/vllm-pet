@@ -8,12 +8,39 @@
  */
 import defaultSkinJson from './default-robot/skin.json'
 import defaultRobotSvg from './default-robot/robot.svg?raw'
+import sakuraPinkJson from './sakura-pink/skin.json'
+import oceanBlueJson from './ocean-blue/skin.json'
+import sunnyOrangeJson from './sunny-orange/skin.json'
+import graphiteDarkJson from './graphite-dark/skin.json'
 
 export const BUILTIN_SKIN = Object.freeze({
   ...defaultSkinJson,
   builtin: true,
   robotSvg: defaultRobotSvg
 })
+
+/** 内置换色皮肤：与默认皮肤共用 SVG 与动画节奏，仅覆盖调色板 */
+function builtinVariant(json) {
+  return Object.freeze({
+    ...json,
+    builtin: true,
+    palette: { ...defaultSkinJson.palette, ...(json.palette || {}) },
+    animations: {
+      bobMs: { ...defaultSkinJson.animations.bobMs, ...(json.animations?.bobMs || {}) },
+      blinkMs: json.animations?.blinkMs ?? defaultSkinJson.animations.blinkMs
+    },
+    robotSvg: defaultRobotSvg
+  })
+}
+
+/** 全部内置皮肤（默认 + 换色变体），新增内置皮肤在此登记 */
+export const BUILTIN_SKINS = Object.freeze([
+  BUILTIN_SKIN,
+  builtinVariant(sakuraPinkJson),
+  builtinVariant(oceanBlueJson),
+  builtinVariant(sunnyOrangeJson),
+  builtinVariant(graphiteDarkJson)
+])
 
 /** 应用皮肤到舞台元素：调色板 → CSS 变量，动画节奏 → 状态时长表 */
 export function applySkinToStage(stageEl, skin) {
@@ -49,12 +76,13 @@ function decodeDataUrl(dataUrl) {
 }
 
 /**
- * 解析皮肤：内置皮肤直接可用；命名皮肤经 IPC 从 <userData>/skins/<name>/ 读取。
+ * 解析皮肤：内置皮肤（默认 + 换色变体）直接可用；命名皮肤经 IPC 从 <userData>/skins/<name>/ 读取。
  * 任何失败都回退到内置皮肤，保证桌宠一定能渲染。
  */
 export async function resolveSkin(skinName, bridge) {
-  if (!skinName || skinName === BUILTIN_SKIN.name || !bridge?.loadSkin) {
-    return { ...BUILTIN_SKIN }
+  const builtinHit = BUILTIN_SKINS.find((s) => s.name === skinName)
+  if (!skinName || builtinHit || !bridge?.loadSkin) {
+    return { ...(builtinHit || BUILTIN_SKIN) }
   }
   try {
     const raw = await bridge.loadSkin(skinName)
@@ -82,15 +110,16 @@ export async function resolveSkin(skinName, bridge) {
   }
 }
 
-/** 列出可选皮肤（内置 + 用户目录），无 IPC 时只有内置 */
+/** 列出可选皮肤（全部内置 + 用户目录），无 IPC 时只有内置 */
 export async function listAvailableSkins(bridge) {
-  const builtinEntry = { name: BUILTIN_SKIN.name, displayName: BUILTIN_SKIN.displayName, builtin: true }
-  if (!bridge?.listSkins) return [builtinEntry]
+  const builtins = BUILTIN_SKINS.map((s) => ({ name: s.name, displayName: s.displayName, builtin: true }))
+  if (!bridge?.listSkins) return builtins
   try {
     const list = await bridge.listSkins()
-    const rest = (Array.isArray(list) ? list : []).filter((s) => s.name !== BUILTIN_SKIN.name)
-    return [builtinEntry, ...rest]
+    const builtinNames = new Set(builtins.map((s) => s.name))
+    const rest = (Array.isArray(list) ? list : []).filter((s) => !builtinNames.has(s.name))
+    return [...builtins, ...rest]
   } catch {
-    return [builtinEntry]
+    return builtins
   }
 }

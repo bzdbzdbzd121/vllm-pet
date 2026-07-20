@@ -1,0 +1,13 @@
+{
+  "name": "sunny-orange",
+  "displayName": "小V · 暖阳橙",
+  "version": 1,
+  "palette": {
+    "body": "#ffbf8a",
+    "bodyShade": "#e0915a",
+    "face": "#2a1a0d",
+    "eye": "#ffedc9",
+    "accent": "#63d8e6",
+    "glow": "#ffd8ae"
+  }
+}

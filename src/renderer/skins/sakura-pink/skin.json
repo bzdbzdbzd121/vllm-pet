@@ -1,0 +1,13 @@
+{
+  "name": "sakura-pink",
+  "displayName": "小V · 樱花粉",
+  "version": 1,
+  "palette": {
+    "body": "#ffb3c7",
+    "bodyShade": "#dd7f9d",
+    "face": "#26121c",
+    "eye": "#ffd6ea",
+    "accent": "#7ef0ff",
+    "glow": "#ffc9de"
+  }
+}

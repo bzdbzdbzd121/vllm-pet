@@ -1,0 +1,13 @@
+{
+  "name": "graphite-dark",
+  "displayName": "小V · 石墨黑",
+  "version": 1,
+  "palette": {
+    "body": "#5b6472",
+    "bodyShade": "#3a414d",
+    "face": "#0b0e13",
+    "eye": "#7ef0ff",
+    "accent": "#ff8a7a",
+    "glow": "#9ff2ff"
+  }
+}

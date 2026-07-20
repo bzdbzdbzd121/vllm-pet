@@ -324,6 +324,10 @@ if (!gotLock) {
       const s = Number(process.env.VLLM_PET_SMOKE_SCALE)
       if (Number.isFinite(s) && s > 0) store.save({ window: { scale: s } })
     }
+    // 冒烟模式可预置皮肤，验证内置换色皮肤渲染
+    if (SMOKE && process.env.VLLM_PET_SMOKE_SKIN) {
+      store.save({ skin: process.env.VLLM_PET_SMOKE_SKIN })
+    }
     registerIpc()
     createWindow()
     if (!SMOKE) {

@@ -8,6 +8,7 @@
  * 环境变量：
  *   VLLM_PET_SMOKE_APIBASE  预置服务地址（通常指向 mock-vllm）
  *   VLLM_PET_SMOKE_SCALE    预置体型缩放（如 0.7 / 1.5）
+ *   VLLM_PET_SMOKE_SKIN     预置皮肤名（验证内置换色皮肤）
  *   VLLM_PET_SMOKE_PAGE     指定加载页面（默认 pet.html）
  *   VLLM_PET_SMOKE_SIZE     指定窗口尺寸（如 480x560）
  *   VLLM_PET_SMOKE_DELAY    did-finish-load 后延迟多少毫秒再截图（默认 2500，
