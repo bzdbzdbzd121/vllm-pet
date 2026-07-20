@@ -35,14 +35,15 @@ function builtinVariant(json, robotSvg = defaultRobotSvg) {
   })
 }
 
-/** 全部内置皮肤（默认 + 换色变体 + 造型皮肤），新增内置皮肤在此登记 */
+/** 全部内置皮肤（默认 + 换色变体），新增内置皮肤在此登记 */
 export const BUILTIN_SKINS = Object.freeze([
   BUILTIN_SKIN,
   builtinVariant(sakuraPinkJson),
   builtinVariant(oceanBlueJson),
   builtinVariant(sunnyOrangeJson),
-  builtinVariant(graphiteDarkJson),
-  builtinVariant(maidRoboJson, maidRoboSvg)
+  builtinVariant(graphiteDarkJson)
+  // 女仆机娘造型迭代中，暂不随发布内置；文件保留在 skins/maid-robo/ 供继续调优
+  // builtinVariant(maidRoboJson, maidRoboSvg)
 ])
 
 /** 应用皮肤到舞台元素：调色板 → CSS 变量，动画节奏 → 状态时长表 */
