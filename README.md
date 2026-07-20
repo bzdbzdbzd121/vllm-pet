@@ -40,6 +40,22 @@
 
 > 老版本 vLLM 没有 `/metrics` 时自动降级为"存活检测"：在线=空闲，掉线=离线。
 
+## 下载安装（GitHub Release）
+
+从 [Releases](https://github.com/bzdbzdbzd121/vllm-pet/releases) 下载对应平台的安装包。
+
+> ⚠️ **macOS 首次打开提示"已损坏"？** 应用未做 Apple 签名/公证，浏览器下载会带隔离属性，
+> 被 Gatekeeper 拦截（并非真的损坏）。安装后在终端执行一次即可正常打开：
+>
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/vllm-pet.app
+> ```
+>
+> （装在别的路径就换成对应路径。）
+
+Windows 便携版解压即用；NSIS 安装器如被 SmartScreen 拦截，点"更多信息 → 仍要运行"。
+Linux AppImage 需 `chmod +x` 后执行。
+
 ## 快速开始
 
 环境要求：**Node.js ≥ 20**（推荐 22+）。
