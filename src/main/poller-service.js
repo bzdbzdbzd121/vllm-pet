@@ -4,7 +4,7 @@
  * 流程：GET <apiBase><healthPath>（失败则 GET <apiBase>/v1/models 兜底判活）
  *      → GET <apiBase><metricsPath> 解析 vllm 指标 → deriveState
  */
-import { parsePrometheusMetrics, deriveState } from '../shared/status-core.js'
+import { parsePrometheusMetrics, deriveState, tokenRate } from '../shared/status-core.js'
 
 const FETCH_TIMEOUT_MS = 4000
 
@@ -18,6 +18,7 @@ export class PollerService {
     this._timer = 0
     this._running = false
     this._everConnected = false
+    this._lastGenTokens = null // { value, at }：上一次生成 token counter 采样
   }
 
   start() {
@@ -84,12 +85,22 @@ export class PollerService {
 
     if (healthOk) this._everConnected = true
     const { state, intensity } = deriveState({ healthOk, metrics }, config.thresholds)
+
+    // 生成吞吐：两次采样的 counter 差值 / 间隔；首样本或服务重启后无法计算则为 null
+    let tokensPerSec = null
+    if (metrics?.genTokensTotal != null) {
+      const curr = { value: metrics.genTokensTotal, at: Date.now() }
+      tokensPerSec = tokenRate(this._lastGenTokens, curr)
+      this._lastGenTokens = curr
+    }
+
     return this._snapshot({
       state: healthOk ? state : this._everConnected ? 'offline' : 'connecting',
       intensity,
       running: metrics?.running ?? 0,
       waiting: metrics?.waiting ?? 0,
       cacheUsage: metrics?.cacheUsage ?? null,
+      tokensPerSec,
       latencyMs: Date.now() - startedAt,
       models,
       error: healthOk ? null : '服务不可达'
@@ -103,6 +114,7 @@ export class PollerService {
       running: 0,
       waiting: 0,
       cacheUsage: null,
+      tokensPerSec: null,
       latencyMs: null,
       models: [],
       error: null,

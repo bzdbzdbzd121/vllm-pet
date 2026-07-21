@@ -4,7 +4,7 @@
  *   MockStatusProvider — 浏览器预览：手动推送状态 + localStorage 模拟配置
  *   LiveFetchProvider  — 浏览器"真实直连"：直接 fetch vLLM（受 CORS 限制，仅调试用）
  */
-import { parsePrometheusMetrics, deriveState, DEFAULT_THRESHOLDS } from '../../shared/status-core.js'
+import { parsePrometheusMetrics, deriveState, tokenRate, DEFAULT_THRESHOLDS } from '../../shared/status-core.js'
 
 export const DEFAULT_CONFIG = Object.freeze({
   apiBase: '',
@@ -66,7 +66,7 @@ export class MockStatusProvider {
     this._subs = new Set()
     this._snapshot = {
       state: 'idle', intensity: 0, running: 0, waiting: 0,
-      cacheUsage: null, latencyMs: null, models: ['mock-model'], error: null, updatedAt: Date.now()
+      cacheUsage: null, tokensPerSec: null, latencyMs: null, models: ['mock-model'], error: null, updatedAt: Date.now()
     }
     let saved = {}
     try {
@@ -118,6 +118,7 @@ export class LiveFetchProvider {
     this._timer = 0
     this._stopped = true
     this._everConnected = false
+    this._lastGenTokens = null
   }
 
   start(onStatus) {
@@ -176,12 +177,21 @@ export class LiveFetchProvider {
     const wasConnected = this._everConnected
     if (healthOk) this._everConnected = true
     const { state, intensity } = deriveState({ healthOk, metrics }, this.opts.thresholds)
+
+    let tokensPerSec = null
+    if (metrics?.genTokensTotal != null) {
+      const curr = { value: metrics.genTokensTotal, at: Date.now() }
+      tokensPerSec = tokenRate(this._lastGenTokens, curr)
+      this._lastGenTokens = curr
+    }
+
     return {
       state: healthOk ? state : wasConnected ? 'offline' : 'connecting',
       intensity,
       running: metrics?.running ?? 0,
       waiting: metrics?.waiting ?? 0,
       cacheUsage: metrics?.cacheUsage ?? null,
+      tokensPerSec,
       latencyMs: Date.now() - startedAt,
       models,
       error: healthOk ? null : error || '无法连接（浏览器直连受 CORS 限制）',

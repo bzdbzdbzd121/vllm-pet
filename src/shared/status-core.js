@@ -5,6 +5,8 @@
  *   vllm:num_requests_running   — 正在推理的请求数（带 label 时有多行）
  *   vllm:num_requests_waiting   — 排队等待的请求数
  *   vllm:gpu_cache_usage_perc   — KV cache 使用率 0~1
+ *   vllm:prompt_tokens_total    — 累计输入 token 数（counter，多 label 求和）
+ *   vllm:generation_tokens_total— 累计生成 token 数（counter，两次采样求差即 tok/s）
  */
 
 export const DEFAULT_THRESHOLDS = Object.freeze({
@@ -16,16 +18,22 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
 
 /**
  * 解析 Prometheus 文本。永不抛异常；文本非法时返回全零对象。
+ * counter 指标（*_tokens_total）缺失时为 null，存在时跨 label 行求和。
  * @param {string} text
- * @returns {{ running: number, waiting: number, cacheUsage: number|null }}
+ * @returns {{ running: number, waiting: number, cacheUsage: number|null,
+ *             promptTokensTotal: number|null, genTokensTotal: number|null }}
  */
 export function parsePrometheusMetrics(text) {
-  const result = { running: 0, waiting: 0, cacheUsage: null }
+  const result = { running: 0, waiting: 0, cacheUsage: null, promptTokensTotal: null, genTokensTotal: null }
   if (typeof text !== 'string' || text.length === 0) return result
 
   const gauges = {
     'vllm:num_requests_running': 'running',
     'vllm:num_requests_waiting': 'waiting'
+  }
+  const counters = {
+    'vllm:prompt_tokens_total': 'promptTokensTotal',
+    'vllm:generation_tokens_total': 'genTokensTotal'
   }
   const CACHE = 'vllm:gpu_cache_usage_perc'
 
@@ -37,10 +45,29 @@ export function parsePrometheusMetrics(text) {
       const value = matchMetricValue(line, metric)
       if (value !== null) result[field] += value
     }
+    for (const [metric, field] of Object.entries(counters)) {
+      const value = matchMetricValue(line, metric)
+      if (value !== null) result[field] = (result[field] ?? 0) + value
+    }
     const cache = matchMetricValue(line, CACHE)
     if (cache !== null) result.cacheUsage = cache
   }
   return result
+}
+
+/**
+ * 由前后两次 counter 采样计算速率（tok/s）。
+ * @param {{ value: number, at: number }|null} prev 上一次采样（at 为毫秒时间戳）
+ * @param {{ value: number, at: number }|null} curr 本次采样
+ * @returns {number|null} 无法计算时返回 null（缺样本 / 间隔非正 / counter 因服务重启清零）
+ */
+export function tokenRate(prev, curr) {
+  if (!prev || !curr) return null
+  const dt = (curr.at - prev.at) / 1000
+  if (!(dt > 0)) return null
+  const delta = curr.value - prev.value
+  if (delta < 0) return null // counter reset：服务重启过，丢弃本次样本
+  return delta / dt
 }
 
 /**

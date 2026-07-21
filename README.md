@@ -25,7 +25,9 @@
 ## 状态映射规则
 
 数据来源：`GET <apiBase>/health`（失败时 `/v1/models` 兜底）+ `GET <apiBase>/metrics`
-解析 `vllm:num_requests_running`、`vllm:num_requests_waiting`、`vllm:gpu_cache_usage_perc`。
+解析 `vllm:num_requests_running`、`vllm:num_requests_waiting`、`vllm:gpu_cache_usage_perc`；
+并采样 `vllm:generation_tokens_total` counter 计算实时生成吞吐，忙碌时显示在状态文本里
+（如 `推理中 ×7 · 队列 3 · 294 tok/s · KV 66%`，算不出或为 0 时不显示）。
 
 | 条件（阈值可配置） | 状态 | 动画 |
 | --- | --- | --- |

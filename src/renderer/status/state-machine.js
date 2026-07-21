@@ -91,7 +91,7 @@ export class PetStateMachine {
   }
 }
 
-/** 状态气泡文本，例如 "推理中 ×6 · 队列 2 · KV 73%" */
+/** 状态气泡文本，例如 "推理中 ×6 · 队列 2 · 86 tok/s · KV 73%" */
 export function formatStatusLine(snap) {
   if (!snap) return ''
   switch (snap.state) {
@@ -102,6 +102,7 @@ export function formatStatusLine(snap) {
     case 'busy': {
       const parts = [`推理中 ×${snap.running ?? 0}`]
       if (snap.waiting) parts.push(`队列 ${snap.waiting}`)
+      if (snap.tokensPerSec > 0) parts.push(`${formatTps(snap.tokensPerSec)} tok/s`) // 0 / null 不显示
       if (snap.cacheUsage != null) parts.push(`KV ${Math.round(snap.cacheUsage * 100)}%`)
       return parts.join(' · ')
     }
@@ -110,4 +111,9 @@ export function formatStatusLine(snap) {
     default:
       return ''
   }
+}
+
+/** tok/s 数值格式化：>= 10 取整，否则保留 1 位小数 */
+function formatTps(v) {
+  return v >= 10 ? String(Math.round(v)) : v.toFixed(1)
 }

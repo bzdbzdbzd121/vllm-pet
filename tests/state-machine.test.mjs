@@ -91,3 +91,22 @@ test('formatStatusLine：未配置/离线/忙碌文案', () => {
   )
   assert.equal(formatStatusLine(snap({ state: 'idle' })), '空闲中')
 })
+
+test('formatStatusLine：tok/s 显示与隐藏规则', () => {
+  // > 0 才显示；>= 10 取整，< 10 保留 1 位小数
+  assert.equal(
+    formatStatusLine(snap({ state: 'busy', intensity: 1, running: 2, tokensPerSec: 86.4 })),
+    '推理中 ×2 · 86 tok/s'
+  )
+  assert.equal(
+    formatStatusLine(snap({ state: 'busy', intensity: 1, running: 1, tokensPerSec: 3.26 })),
+    '推理中 ×1 · 3.3 tok/s'
+  )
+  // 0 / null / 负数 不显示
+  for (const tokensPerSec of [0, null, -5]) {
+    assert.equal(
+      formatStatusLine(snap({ state: 'busy', intensity: 1, running: 2, tokensPerSec })),
+      '推理中 ×2'
+    )
+  }
+})

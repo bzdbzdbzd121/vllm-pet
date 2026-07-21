@@ -99,7 +99,7 @@ export class SettingsPanel {
         <button class="btn-close" type="button">关闭</button>
         <button class="btn-save" type="button">保存并连接</button>
       </div>
-      <div class="hint">读取服务的 /health 与 /metrics（vllm:num_requests_running / waiting、gpu_cache_usage_perc）。右键宠物可随时打开本面板。</div>
+      <div class="hint">读取服务的 /health 与 /metrics（vllm:num_requests_running / waiting、gpu_cache_usage_perc、generation_tokens_total）。右键宠物可随时打开本面板。</div>
     `
     anchorEl.append(el)
     this.el = el

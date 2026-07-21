@@ -284,12 +284,12 @@
   /* 舞台内底部：紧贴地面阴影下方（阴影 y≈223-241），不遮宠物本体 */
   top: calc(100% - 8px); left: 50%;
   transform: translate(-50%, -100%);
-  max-width: 220px;
+  max-width: calc(100vw - 10px);
   padding: 4px 10px;
   border-radius: 12px;
   background: rgba(18, 35, 43, 0.86);
   color: #cfe9ef;
-  font: 12px/1.5 "PingFang SC", "Microsoft YaHei", sans-serif;
+  font: 11px/1.5 "PingFang SC", "Microsoft YaHei", sans-serif;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

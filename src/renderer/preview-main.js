@@ -10,9 +10,9 @@ import { resolveSkin } from './skins/skin-loader.js'
 
 const DEMOS = [
   { key: 'idle', label: '😌 空闲', snap: { state: 'idle', intensity: 0, running: 0, waiting: 0, cacheUsage: 0.31, error: null } },
-  { key: 'busy-1', label: '💨 轻载', snap: { state: 'busy', intensity: 1, running: 2, waiting: 0, cacheUsage: 0.42, error: null } },
-  { key: 'busy-2', label: '💦 中载', snap: { state: 'busy', intensity: 2, running: 7, waiting: 3, cacheUsage: 0.66, error: null } },
-  { key: 'busy-3', label: '🔥 重载', snap: { state: 'busy', intensity: 3, running: 24, waiting: 9, cacheUsage: 0.91, error: null } },
+  { key: 'busy-1', label: '💨 轻载', snap: { state: 'busy', intensity: 1, running: 2, waiting: 0, cacheUsage: 0.42, tokensPerSec: 83.6, error: null } },
+  { key: 'busy-2', label: '💦 中载', snap: { state: 'busy', intensity: 2, running: 7, waiting: 3, cacheUsage: 0.66, tokensPerSec: 294, error: null } },
+  { key: 'busy-3', label: '🔥 重载', snap: { state: 'busy', intensity: 3, running: 24, waiting: 9, cacheUsage: 0.91, tokensPerSec: 1008, error: null } },
   { key: 'connecting', label: '📡 连接中', snap: { state: 'connecting', intensity: 0, running: 0, waiting: 0, cacheUsage: null, error: null } },
   { key: 'offline', label: '🔌 离线', snap: { state: 'offline', intensity: 0, running: 0, waiting: 0, cacheUsage: null, error: '连接超时' } }
 ]
