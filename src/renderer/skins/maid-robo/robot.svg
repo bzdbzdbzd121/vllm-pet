@@ -6,13 +6,17 @@
     <rect x="125" y="212" width="13" height="24" rx="6" style="fill:var(--c-body)"/>
     <ellipse cx="108" cy="237" rx="10" ry="5" style="fill:var(--c-body-shade)"/>
     <ellipse cx="132" cy="237" rx="10" ry="5" style="fill:var(--c-body-shade)"/>
-    <!-- 手臂：黑色泡泡袖 + 白袖口 + 小手 -->
-    <ellipse class="r-arm r-arm-left" cx="84" cy="180" rx="11" ry="10"/>
-    <ellipse class="r-arm r-arm-right" cx="156" cy="180" rx="11" ry="10"/>
-    <rect x="77" y="188" width="14" height="7" rx="3.5" style="fill:var(--c-body)"/>
-    <rect x="149" y="188" width="14" height="7" rx="3.5" style="fill:var(--c-body)"/>
-    <circle cx="84" cy="200" r="4.5" style="fill:var(--c-face)"/>
-    <circle cx="156" cy="200" r="4.5" style="fill:var(--c-face)"/>
+    <!-- 手臂：整组挂 r-arm 钩子（摆动时袖子/袖口/手一起动） -->
+    <g class="r-arm r-arm-left">
+      <ellipse cx="84" cy="180" rx="11" ry="10"/>
+      <rect x="77" y="188" width="14" height="7" rx="3.5" style="fill:var(--c-body)"/>
+      <circle cx="84" cy="200" r="4.5" style="fill:var(--c-face)"/>
+    </g>
+    <g class="r-arm r-arm-right">
+      <ellipse cx="156" cy="180" rx="11" ry="10"/>
+      <rect x="149" y="188" width="14" height="7" rx="3.5" style="fill:var(--c-body)"/>
+      <circle cx="156" cy="200" r="4.5" style="fill:var(--c-face)"/>
+    </g>
     <!-- 黑裙 -->
     <path d="M96 172 C108 166 132 166 144 172 L158 222 C132 232 108 232 82 222 Z" style="fill:var(--c-body-shade)"/>
     <!-- 裙摆白色花边 -->
@@ -32,29 +36,29 @@
     <g class="r-head">
       <!-- 脖子 -->
       <rect x="114" y="156" width="12" height="12" rx="4" style="fill:var(--c-face)"/>
-      <!-- 后脑头发（头壳钩子：波波头轮廓 + 发尾外翘） -->
+      <!-- 后脑头发（头壳钩子：贴脸波波头，发尾微微外翘） -->
       <path class="r-head-shell" d="M120 42
-        C74 42 52 74 54 112
-        C55 134 51 156 58 169
-        C64 178 74 179 80 172
-        C78 160 80 150 84 142
-        L156 142
-        C160 150 162 160 160 172
-        C166 179 176 178 182 169
-        C189 156 185 134 186 112
-        C188 74 166 42 120 42 Z"/>
+        C80 42 61 72 63 110
+        C64 130 61 150 67 163
+        C72 171 80 171 85 165
+        C83 156 84 149 88 142
+        L152 142
+        C156 149 157 156 155 165
+        C160 171 168 171 173 163
+        C179 150 176 130 177 110
+        C179 72 160 42 120 42 Z"/>
       <!-- 头发高光 -->
       <ellipse cx="94" cy="62" rx="17" ry="7" transform="rotate(-18 94 62)" fill="#ffffff" opacity="0.85"/>
-      <!-- 圆脸（肤色的"屏幕"：脸颊宽、下巴圆润） -->
-      <path class="r-face" d="M120 96 C98 96 86 108 86 126 C86 146 100 160 120 160 C140 160 154 146 154 126 C154 108 142 96 120 96 Z"/>
+      <!-- 圆脸（加宽脸颊、圆下巴） -->
+      <path class="r-face" d="M120 96 C97 96 83 110 83 128 C83 148 99 162 120 162 C141 162 157 148 157 128 C157 110 143 96 120 96 Z"/>
       <!-- 刘海（三撮尖角） -->
-      <path d="M84 110 C86 96 100 90 120 90 C140 90 154 96 156 110
-        L150 108 L144 119 L136 109 L128 120 L120 110 L112 120 L104 109 L96 119 L90 108 Z"
+      <path d="M82 110 C84 96 99 90 120 90 C141 90 156 96 158 110
+        L152 108 L146 119 L137 109 L129 120 L120 110 L111 120 L103 109 L94 119 L88 108 Z"
         style="fill:var(--c-body);stroke:var(--c-body-shade);stroke-width:3;stroke-linejoin:round"/>
-      <!-- 两侧发束（垂到下巴） -->
-      <path d="M88 106 C82 118 80 138 84 154 C86 161 93 161 95 154 C92 140 92 122 97 108 Z"
+      <!-- 两侧发束（细发束垂到脸颊边） -->
+      <path d="M90 106 C86 118 85 136 88 152 C89 158 94 158 95 152 C92 138 93 122 97 108 Z"
         style="fill:var(--c-body);stroke:var(--c-body-shade);stroke-width:2.5"/>
-      <path d="M152 106 C158 118 160 138 156 154 C154 161 147 161 145 154 C148 140 148 122 143 108 Z"
+      <path d="M150 106 C154 118 155 136 152 152 C151 158 146 158 145 152 C148 138 147 122 143 108 Z"
         style="fill:var(--c-body);stroke:var(--c-body-shade);stroke-width:2.5"/>
       <!-- 女仆头饰（褶皱发箍） -->
       <path d="M74 58 C74 44 84 38 94 40 C96 32 108 30 114 34 C118 28 130 28 134 34 C140 30 152 32 154 40 C164 38 174 44 174 58 C140 49 108 49 74 58 Z"
@@ -66,8 +70,8 @@
       <circle cx="187" cy="108" r="6" style="fill:var(--c-eye)" opacity="0.55"/>
       <circle class="r-antenna-bulb" cx="187" cy="108" r="3.5"/>
       <!-- 蝴蝶结（耳朵钩子） -->
-      <path class="r-ear r-ear-left" d="M60 102 L50 95 L52 107 Z M60 102 L70 95 L68 107 Z"/>
-      <path class="r-ear r-ear-right" d="M181 90 L172 84 L174 96 Z M181 90 L190 84 L188 96 Z"/>
+      <path class="r-ear r-ear-left" d="M66 103 L56 96 L58 108 Z M66 103 L76 96 L74 108 Z"/>
+      <path class="r-ear r-ear-right" d="M176 91 L167 85 L169 97 Z M176 91 L185 85 L183 97 Z"/>
       <!-- 大眼睛组（眨眼缩放作用于整组：底色+上睫影+高光） -->
       <g class="r-eyes">
         <g class="r-eye-pill r-eye-left">
