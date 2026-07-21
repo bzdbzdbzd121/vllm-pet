@@ -18,7 +18,7 @@ const DEMOS = [
 ]
 
 async function boot() {
-  // URL hash 可预置皮肤与状态，便于冒烟截图与分享演示：index.html#skin=maid-robo&state=sleeping
+  // URL hash 可预置皮肤与状态，便于冒烟截图与分享演示：index.html#skin=ocean-blue&state=sleeping
   const hashParams = new URLSearchParams(location.hash.slice(1))
   const hashSkin = hashParams.get('skin')
   const hashState = hashParams.get('state')
