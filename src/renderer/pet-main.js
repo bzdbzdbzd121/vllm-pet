@@ -18,6 +18,7 @@ async function boot() {
 
   const app = document.getElementById('app')
   const pet = new PetView(app, { skin, scale: config.window?.scale ?? 1 })
+  pet.setStatusFontSize(config.statusFontSize ?? 11)
 
   let statusEnabled = config.showStatus !== false
   let lastStatusText = ''
@@ -44,6 +45,7 @@ async function boot() {
     statusEnabled = saved.showStatus !== false
     pet.setStatusLine(statusEnabled ? lastStatusText : '')
     pet.setScale(saved.window?.scale ?? 1)
+    pet.setStatusFontSize(saved.statusFontSize ?? 11)
     pet.applySkin(await resolveSkin(saved.skin, bridge))
   }
 

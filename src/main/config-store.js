@@ -13,6 +13,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   thresholds: { light: 1, medium: 4, heavy: 16, cacheHeavy: 0.85 },
   stateMap: { light: 'busy-1', medium: 'busy-2', heavy: 'busy-3' },
   showStatus: true,
+  statusFontSize: 11,
   skin: 'default-robot',
   idleSleepMinutes: 10,
   update: { autoCheck: true },

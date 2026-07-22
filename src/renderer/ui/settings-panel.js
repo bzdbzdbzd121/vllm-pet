@@ -91,7 +91,10 @@ export class SettingsPanel {
           <input type="number" name="scale" min="0.6" max="2" step="0.1" value="${config.window?.scale ?? 1}">
         </div>
       </div>
-      <div class="check"><input type="checkbox" name="showStatus" ${config.showStatus !== false ? 'checked' : ''}><span>显示状态文本（宠物上方的气泡）</span></div>
+      <div class="check"><input type="checkbox" name="showStatus" ${config.showStatus !== false ? 'checked' : ''}><span>显示状态文本（宠物下方的气泡）</span></div>
+      <div class="row">
+        <div><label>状态文字大小 (px)<span class="section-note">不随体型缩放变化</span></label><input type="number" name="statusFontSize" min="9" max="24" step="1" value="${config.statusFontSize ?? 11}"></div>
+      </div>
       <div class="check"><input type="checkbox" name="alwaysOnTop" ${config.window?.alwaysOnTop !== false ? 'checked' : ''}><span>窗口置顶</span></div>
       <div class="check"><input type="checkbox" name="clickThrough" ${config.window?.clickThrough ? 'checked' : ''}><span>鼠标穿透（托盘菜单可恢复）</span></div>
 
@@ -131,6 +134,7 @@ export class SettingsPanel {
         pollIntervalMs: num('pollIntervalMs', 2000),
         skin: get('skin').value,
         showStatus: get('showStatus').checked,
+        statusFontSize: num('statusFontSize', 11),
         thresholds: {
           light: num('tLight', 1),
           medium: num('tMedium', 4),

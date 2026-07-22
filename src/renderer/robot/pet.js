@@ -64,7 +64,7 @@ export class PetView {
     }, CELEBRATE_MS)
   }
 
-  /** 顶部状态文本；传空字符串隐藏 */
+  /** 底部状态文本；传空字符串隐藏 */
   setStatusLine(text) {
     this.statusEl.textContent = text || ''
     this.stage.classList.toggle('show-status', Boolean(text))
@@ -73,8 +73,19 @@ export class PetView {
   /** 整体缩放：以顶部为原点向下放大（状态文本在舞台下方，窗口底部有留白） */
   setScale(scale) {
     const s = Number(scale) > 0 ? Number(scale) : 1
+    this._scale = s
     this.stage.style.transform = `scale(${s})`
     this.stage.style.transformOrigin = '50% 0'
+    // 状态文本反向缩放：字号不随体型缩放而变小；宽度定为窗口宽（布局宽度×1/s 后 = 窗口宽-10px）
+    this.statusEl.style.transform = `translate(-50%, -100%) scale(${1 / s})`
+    const vw = this.stage.ownerDocument?.defaultView?.innerWidth || 240 * s
+    this.statusEl.style.width = `${Math.max(120, (vw - 10) * s)}px`
+  }
+
+  /** 状态文本字号（px，与体型缩放解耦） */
+  setStatusFontSize(px) {
+    const v = Number(px)
+    this.statusEl.style.fontSize = `${Math.min(24, Math.max(9, v || 11))}px`
   }
 
   /** 运行时换肤 */
