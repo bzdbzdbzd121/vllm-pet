@@ -370,6 +370,16 @@
 }
 .pet-settings .btn-save { background: var(--c-body, #7fd8c9); color: #0c2620; font-weight: 700; }
 .pet-settings .btn-close { background: #29414c; color: #b9d3da; }
+.pet-settings .btn-update {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 0;
+  background: #29414c;
+  color: #b9d3da;
+}
+.pet-settings .btn-update:hover:not(:disabled) { background: #33505d; }
+.pet-settings .btn-update:disabled { opacity: 0.6; cursor: default; }
 .pet-settings .hint { margin-top: 8px; color: #7d99a2; font-size: 11px; }
 .pet-settings .section {
   margin: 12px 0 6px;
