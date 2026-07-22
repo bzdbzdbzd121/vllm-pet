@@ -90,11 +90,18 @@ export function pickAsset(assets, platform, arch) {
 }
 
 /**
- * 生成"等旧进程退出 → 备份旧包 → 换入新包 → 去隔离 → 重启"的 sh 脚本。
- * 参数：$1=旧进程 PID  $2=目标 .app 路径  $3=新 .app 路径  $4=备份路径
+ * 生成"等旧进程退出 → 备份旧包 → 换入新包 → 去隔离 → 重启"的 POSIX sh 脚本。
+ * 参数：$1=旧进程 PID  $2=目标路径  $3=新文件路径  $4=备份路径
  * 任何一步失败都保持现场可恢复（备份仍在）。
+ * @param {{ relaunch?: 'open'|'direct' }} [opts]
+ *   open   — macOS：xattr 去隔离 + open -n（用于 .app 包）
+ *   direct — Linux：chmod +x 后直接执行（用于 AppImage）
  */
-export function buildApplyScript() {
+export function buildApplyScript({ relaunch = 'open' } = {}) {
+  const relaunchLines =
+    relaunch === 'direct'
+      ? ['  chmod +x "$BUNDLE" 2>/dev/null', '  "$BUNDLE" &']
+      : ['  xattr -dr com.apple.quarantine "$BUNDLE" 2>/dev/null', '  open -n "$BUNDLE"']
   return [
     '#!/bin/sh',
     'PID="$1"; BUNDLE="$2"; NEW_APP="$3"; BACKUP="$4"',
@@ -103,12 +110,36 @@ export function buildApplyScript() {
     'sleep 1',
     'mv "$BUNDLE" "$BACKUP" || exit 1',
     'if mv "$NEW_APP" "$BUNDLE"; then',
-    '  xattr -dr com.apple.quarantine "$BUNDLE" 2>/dev/null',
-    '  open -n "$BUNDLE"',
+    ...relaunchLines,
     'else',
     '  mv "$BACKUP" "$BUNDLE" # 换入失败则回滚',
     'fi',
     'exit 0',
     ''
   ].join('\n')
+}
+
+/**
+ * Windows 自更新守护脚本（cmd）：等旧进程退出 → NSIS 静默安装 → 启动新版。
+ * 路径与 PID 直接内联（避免 cmd 参数引号转义坑）；静默安装会读取注册表中
+ * 原安装目录，因此升级覆盖到原位置。若安装器自带结束后启动，重复 start 会被
+ * 单实例锁挡掉，无副作用。
+ */
+export function buildWindowsApplyScript({ pid, setupPath, targetExe }) {
+  return [
+    '@echo off',
+    `set "PID=${pid}"`,
+    `set "SETUP=${setupPath}"`,
+    `set "TARGET=${targetExe}"`,
+    ':wait',
+    'tasklist /FI "PID eq %PID%" /NH 2>nul | find /I ".exe" >nul',
+    'if %errorlevel% equ 0 (',
+    '  timeout /t 1 /nobreak >nul',
+    '  goto wait',
+    ')',
+    '"%SETUP%" /S',
+    'start "" "%TARGET%"',
+    'exit',
+    ''
+  ].join('\r\n')
 }

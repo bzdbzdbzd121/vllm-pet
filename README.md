@@ -162,8 +162,11 @@ npm run dist                 # 本机平台安装包 → out/
 - **macOS**：一键自更新——应用内下载 zip（程序内下载**不会**产生 quarantine
   隔离标记，因此更新后不会再出现"已损坏"提示）→ 解压 → 旧版移入废纸篓（可恢复）→
   自动重启。可选择立即重启或下次退出时生效。
-- **Windows / Linux**：检测到新版本后引导前往 Release 页下载（未接 electron-updater，
-  macOS 上它强制要求 Apple 开发者签名，故 mac 走自研轻量更新）。
+- **Windows（NSIS 安装版）**：一键自更新——下载安装包后由守护脚本静默覆盖安装并重启。
+- **Linux（AppImage）**：一键自更新——新 AppImage 同目录替换（旧版保留为 `.old` 备份）并重启。
+- **deb / Windows 便携版**：检测到新版本后引导前往 Release 页下载（系统包与单文件
+  便携版不适合自替换）。
+- 均未使用 electron-updater：macOS 上它强制要求 Apple 开发者签名，故全平台走自研轻量更新。
 
 ## 项目结构
 

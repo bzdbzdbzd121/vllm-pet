@@ -6,6 +6,7 @@ import {
   parseRelease,
   pickAsset,
   buildApplyScript,
+  buildWindowsApplyScript,
   releasesApiUrl,
   releasePageUrl
 } from '../src/shared/update-core.js'
@@ -77,6 +78,27 @@ test('buildApplyScript: 守护脚本包含关键步骤', () => {
   assert.match(sh, /mv "\$NEW_APP" "\$BUNDLE"/) // 换入新包
   assert.match(sh, /xattr -dr com\.apple\.quarantine/) // 兜底去隔离
   assert.match(sh, /open -n "\$BUNDLE"/) // 重启
+})
+
+test('buildApplyScript(direct): AppImage 模式直接执行且不去隔离', () => {
+  const sh = buildApplyScript({ relaunch: 'direct' })
+  assert.match(sh, /chmod \+x "\$BUNDLE"/)
+  assert.match(sh, /"\$BUNDLE" &/) // 后台直接启动
+  assert.doesNotMatch(sh, /xattr/)
+  assert.match(sh, /mv "\$BACKUP" "\$BUNDLE"/) // 回滚仍在
+})
+
+test('buildWindowsApplyScript: cmd 守护脚本等退出后静默安装并启动', () => {
+  const cmd = buildWindowsApplyScript({
+    pid: 1234,
+    setupPath: 'C:\\Users\\a\\AppData\\Roaming\\vllm-pet\\update\\Setup.exe',
+    targetExe: 'C:\\Users\\a\\AppData\\Local\\Programs\\vllm-pet\\vllm-pet.exe'
+  })
+  assert.match(cmd, /PID eq %PID%/) // 轮询旧进程
+  assert.match(cmd, /1234/)
+  assert.match(cmd, /"%SETUP%" \/S/) // NSIS 静默安装
+  assert.match(cmd, /start "" "%TARGET%"/) // 启动新版
+  assert.match(cmd, /\r\n/) // cmd 需要 CRLF
 })
 
 test('URL 常量', () => {
