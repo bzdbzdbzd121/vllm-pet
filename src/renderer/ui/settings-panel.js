@@ -95,6 +95,11 @@ export class SettingsPanel {
       <div class="check"><input type="checkbox" name="alwaysOnTop" ${config.window?.alwaysOnTop !== false ? 'checked' : ''}><span>窗口置顶</span></div>
       <div class="check"><input type="checkbox" name="clickThrough" ${config.window?.clickThrough ? 'checked' : ''}><span>鼠标穿透（托盘菜单可恢复）</span></div>
 
+      <div class="section">⬆️ 更新</div>
+      <div class="check"><input type="checkbox" name="autoUpdate" ${config.update?.autoCheck !== false ? 'checked' : ''}><span>启动时自动检查更新</span></div>
+      <button class="btn-update" type="button" ${this.bridge ? '' : 'disabled'}>检查更新</button>
+      ${this.bridge ? '' : '<div class="hint">浏览器预览模式不支持检查更新</div>'}
+
       <div class="actions">
         <button class="btn-close" type="button">关闭</button>
         <button class="btn-save" type="button">保存并连接</button>
@@ -104,6 +109,15 @@ export class SettingsPanel {
     anchorEl.append(el)
     this.el = el
 
+    el.querySelector('.btn-update')?.addEventListener('click', () => {
+      const btn = el.querySelector('.btn-update')
+      btn.textContent = '检查中…'
+      btn.disabled = true
+      Promise.resolve(this.bridge?.checkUpdate?.()).finally(() => {
+        btn.textContent = '检查更新'
+        btn.disabled = false
+      })
+    })
     el.querySelector('.btn-close').addEventListener('click', () => this.close())
     el.querySelector('.btn-save').addEventListener('click', async () => {
       const get = (n) => el.querySelector(`[name="${n}"]`)
@@ -132,7 +146,8 @@ export class SettingsPanel {
           alwaysOnTop: get('alwaysOnTop').checked,
           clickThrough: get('clickThrough').checked,
           scale: num('scale', 1)
-        }
+        },
+        update: { autoCheck: get('autoUpdate').checked }
       }
       const saved = await this.provider.saveConfig(patch)
       this.onSaved(saved)

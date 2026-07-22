@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('vllmPet', {
     return () => ipcRenderer.removeListener('config:changed', listener)
   },
   openSettings: () => ipcRenderer.send('settings:open'),
+  checkUpdate: () => ipcRenderer.invoke('update:check'),
 
   listSkins: () => ipcRenderer.invoke('skins:list'),
   loadSkin: (name) => ipcRenderer.invoke('skins:load', name),

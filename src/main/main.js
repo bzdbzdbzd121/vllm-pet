@@ -12,6 +12,7 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { ConfigStore } from './config-store.js'
 import { PollerService } from './poller-service.js'
+import { UpdateService } from './updater.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(__dirname, '..', '..')
@@ -41,6 +42,7 @@ let settingsWin = null
 let tray = null
 let store = null
 let poller = null
+let updater = null
 let dragSession = null
 
 /* ---------------- 窗口 ---------------- */
@@ -119,11 +121,12 @@ function createTray() {
   rebuildTrayMenu()
 }
 
-function rebuildTrayMenu() {
+function rebuildTrayMenu(progressText = '') {
   if (!tray) return
   const config = store.load()
   const menu = Menu.buildFromTemplate([
     { label: '⚙️ 打开设置', click: () => openSettingsWindow() },
+    { label: progressText || '🔄 检查更新', enabled: !progressText, click: () => updater?.check({ manual: true }) },
     { type: 'separator' },
     {
       label: '窗口置顶',
@@ -265,6 +268,7 @@ function registerIpc() {
   })
   ipcMain.handle('skins:list', () => listSkins())
   ipcMain.handle('skins:load', (_e, name) => loadSkin(name))
+  ipcMain.handle('update:check', () => updater?.check({ manual: true }))
   ipcMain.on('settings:open', () => openSettingsWindow())
   ipcMain.on('window:click-through', (_e, v) => {
     store.save({ window: { clickThrough: !!v } })
@@ -340,6 +344,15 @@ if (!gotLock) {
         onStatus: (snap) => win?.webContents.send('status:update', snap)
       })
       poller.start()
+      updater = new UpdateService({
+        getAutoCheck: () => store.load().update?.autoCheck !== false,
+        onProgress: (text) => {
+          rebuildTrayMenu(text)
+          tray?.setToolTip(text ? `vLLM Pet · ${text}` : 'vLLM Pet · 小V')
+        },
+        parentWindow: () => settingsWin || win
+      })
+      updater.scheduleAutoCheck()
       // 首次运行（未配置服务地址）自动打开设置窗口
       if (!store.load().apiBase) openSettingsWindow()
     } else {

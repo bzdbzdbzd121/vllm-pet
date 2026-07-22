@@ -17,6 +17,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   showStatus: true,
   skin: 'default-robot',
   idleSleepMinutes: 10,
+  update: { autoCheck: true },
   window: { alwaysOnTop: true, clickThrough: false, scale: 1, opacity: 1, x: null, y: null }
 })
 
