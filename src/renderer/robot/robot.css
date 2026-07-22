@@ -284,9 +284,9 @@
   /* 舞台内底部：紧贴地面阴影下方（阴影 y≈223-241），不遮宠物本体 */
   top: calc(100% - 8px); left: 50%;
   transform: translate(-50%, -100%);
-  /* 宽度由 JS 按窗口宽度×缩放计算（视觉宽度 = 窗口宽 - 10px），并反向缩放保持原生字号 */
+  /* 宽度由 JS 实测文本宽度贴合内容（上限窗口宽-10px），并反向缩放保持原生字号 */
   padding: 4px 10px;
-  border-radius: 12px;
+  border-radius: 999px; /* 两端半圆 */
   background: rgba(18, 35, 43, 0.86);
   color: #cfe9ef;
   font: 11px/1.5 "PingFang SC", "Microsoft YaHei", sans-serif;

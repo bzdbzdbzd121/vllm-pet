@@ -100,10 +100,11 @@ export function formatStatusLine(snap) {
     case 'connecting':
       return snap.error || '连接中…'
     case 'busy': {
-      const parts = [`推理中 ×${snap.running ?? 0}`]
-      if (snap.waiting) parts.push(`队列 ${snap.waiting}`)
-      if (snap.tokensPerSec > 0) parts.push(`${formatTps(snap.tokensPerSec)} tok/s`) // 0 / null 不显示
-      if (snap.cacheUsage != null) parts.push(`KV ${Math.round(snap.cacheUsage * 100)}%`)
+      // 段内用不换行空格：换行只发生在 · 分隔处，避免 "KV / 91%" 这种难看断行
+      const parts = [`推理中 ×${snap.running ?? 0}`]
+      if (snap.waiting) parts.push(`队列 ${snap.waiting}`)
+      if (snap.tokensPerSec > 0) parts.push(`${formatTps(snap.tokensPerSec)} tok/s`) // 0 / null 不显示
+      if (snap.cacheUsage != null) parts.push(`KV ${Math.round(snap.cacheUsage * 100)}%`)
       return parts.join(' · ')
     }
     case 'idle':

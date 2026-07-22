@@ -68,6 +68,7 @@ export class PetView {
   setStatusLine(text) {
     this.statusEl.textContent = text || ''
     this.stage.classList.toggle('show-status', Boolean(text))
+    this._fitStatusWidth()
   }
 
   /** 整体缩放：以顶部为原点向下放大（状态文本在舞台下方，窗口底部有留白） */
@@ -76,16 +77,44 @@ export class PetView {
     this._scale = s
     this.stage.style.transform = `scale(${s})`
     this.stage.style.transformOrigin = '50% 0'
-    // 状态文本反向缩放：字号不随体型缩放而变小；宽度定为窗口宽（布局宽度×1/s 后 = 窗口宽-10px）
+    // 状态文本反向缩放：字号不随体型缩放而变小
     this.statusEl.style.transform = `translate(-50%, -100%) scale(${1 / s})`
-    const vw = this.stage.ownerDocument?.defaultView?.innerWidth || 240 * s
-    this.statusEl.style.width = `${Math.max(120, (vw - 10) * s)}px`
+    this._fitStatusWidth()
   }
 
   /** 状态文本字号（px，与体型缩放解耦） */
   setStatusFontSize(px) {
     const v = Number(px)
-    this.statusEl.style.fontSize = `${Math.min(24, Math.max(9, v || 11))}px`
+    this._statusFontSize = Math.min(24, Math.max(9, v || 11))
+    this.statusEl.style.fontSize = `${this._statusFontSize}px`
+    this._fitStatusWidth()
+  }
+
+  /**
+   * 气泡宽度贴合文本：用隐藏 span 按真实排版实测字宽（视觉 px）。
+   * 注意：气泡在 scale(s) 的舞台内、自身反向 scale(1/s)，净变换 = 1，
+   * 因此样式宽度直接等于视觉宽度（content-box，border = 宽 + 20px padding）。
+   * 超上限（窗口宽-10px）时定宽，由 CSS 换行（最多两行）。
+   */
+  _fitStatusWidth() {
+    const doc = this.stage.ownerDocument
+    const vw = doc?.defaultView?.innerWidth || 240
+    const maxBorder = Math.max(120, vw - 10)
+    const text = this.statusEl.textContent
+    let content = 16
+    if (text && doc) {
+      const span = (this._measureSpan ||= (() => {
+        const el = doc.createElement('span')
+        el.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;white-space:nowrap;'
+        ;(doc.body || doc.documentElement).append(el)
+        return el
+      })())
+      span.style.font = `${this._statusFontSize || 11}px "PingFang SC", "Microsoft YaHei", sans-serif`
+      span.textContent = text
+      content = Math.ceil(span.getBoundingClientRect().width)
+    }
+    // content-box 宽度 = 文本宽 + 余量；上限扣除 20px padding 使 border 不超窗
+    this.statusEl.style.width = `${Math.max(16, Math.min(content + 4, maxBorder - 20))}px`
   }
 
   /** 运行时换肤 */
