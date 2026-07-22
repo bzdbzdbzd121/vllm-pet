@@ -295,6 +295,16 @@ function runSmokeCapture() {
     const delay = Math.max(0, Number(process.env.VLLM_PET_SMOKE_DELAY) || 2500)
     setTimeout(async () => {
       try {
+        if (process.env.VLLM_PET_SMOKE_DEBUG) {
+          const dbg = await win.webContents.executeJavaScript(`(() => {
+            const el = document.querySelector('.pet-status')
+            if (!el) return 'no-el'
+            const r = el.getBoundingClientRect()
+            return JSON.stringify({ rectW: r.width, styleW: el.style.width,
+              iw: innerWidth, text: el.textContent, bodyChildren: document.body.children.length })
+          })()`)
+          console.log('[smoke-debug]', dbg)
+        }
         const image = await win.webContents.capturePage()
         const out = path.join(process.cwd(), 'smoke-pet.png')
         fs.writeFileSync(out, image.toPNG())

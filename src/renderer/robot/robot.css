@@ -281,6 +281,7 @@
    ============================================================ */
 .pet-status {
   position: absolute;
+  box-sizing: content-box; /* JS 按文本宽度写入 width，须不受页面 border-box reset 影响 */
   /* 舞台内底部：紧贴地面阴影下方（阴影 y≈223-241），不遮宠物本体 */
   top: calc(100% - 8px); left: 50%;
   transform: translate(-50%, -100%);
