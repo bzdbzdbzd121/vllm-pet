@@ -9,6 +9,28 @@ import { applySkinToStage, bobDurationFor } from '../skins/skin-loader.js'
 const VISUAL_STATES = ['idle', 'sleeping', 'connecting', 'busy-1', 'busy-2', 'busy-3', 'offline']
 const CELEBRATE_MS = 950
 
+/**
+ * 把地面阴影（.r-shadow）从皮肤 SVG 中剥离成独立 SVG：
+ * 整体浮动动画在 HTML 包装层（GPU 合成）上进行，阴影必须留在地面不能跟着飘。
+ * 皮肤没有 .r-shadow 或解析失败时原样返回（阴影随身体浮动，属可接受降级）。
+ */
+function splitShadow(svgText) {
+  try {
+    const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml')
+    const svg = doc.documentElement
+    if (!svg || svg.tagName.toLowerCase() !== 'svg') return { body: svgText, shadow: '' }
+    const shadowEl = svg.querySelector('.r-shadow')
+    if (!shadowEl) return { body: svgText, shadow: '' }
+    const shadowSvg = svg.cloneNode(false) // 浅拷贝根节点，保留 class/viewBox
+    shadowEl.remove()
+    shadowSvg.append(shadowEl)
+    const ser = new XMLSerializer()
+    return { body: ser.serializeToString(svg), shadow: ser.serializeToString(shadowSvg) }
+  } catch {
+    return { body: svgText, shadow: '' }
+  }
+}
+
 export class PetView {
   /**
    * @param {HTMLElement} container 挂载点
@@ -23,14 +45,20 @@ export class PetView {
     this.stage = document.createElement('div')
     this.stage.className = 'pet-stage st-idle'
 
+    // 地面阴影剥离到独立层：bob 动画在 HTML 层走合成器，阴影不随机器人浮动
+    const { body, shadow } = splitShadow(skin.robotSvg)
+    this.shadowWrap = document.createElement('div')
+    this.shadowWrap.className = 'pet-shadow'
+    this.shadowWrap.innerHTML = shadow
+
     this.scaleWrap = document.createElement('div')
     this.scaleWrap.className = 'pet-scale'
-    this.scaleWrap.innerHTML = skin.robotSvg
+    this.scaleWrap.innerHTML = body
 
     this.statusEl = document.createElement('div')
     this.statusEl.className = 'pet-status'
 
-    this.stage.append(this.scaleWrap, this.statusEl)
+    this.stage.append(this.shadowWrap, this.scaleWrap, this.statusEl)
     container.append(this.stage)
 
     applySkinToStage(this.stage, skin)
@@ -121,7 +149,11 @@ export class PetView {
   applySkin(skin) {
     this.skin = skin
     applySkinToStage(this.stage, skin)
-    if (skin.robotSvg) this.scaleWrap.innerHTML = skin.robotSvg
+    if (skin.robotSvg) {
+      const { body, shadow } = splitShadow(skin.robotSvg)
+      this.scaleWrap.innerHTML = body
+      this.shadowWrap.innerHTML = shadow
+    }
     this._applyBobDuration()
   }
 

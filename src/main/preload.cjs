@@ -22,6 +22,11 @@ contextBridge.exposeInMainWorld('vllmPet', {
     ipcRenderer.on('config:changed', listener)
     return () => ipcRenderer.removeListener('config:changed', listener)
   },
+  onPowerPause: (cb) => {
+    const listener = (_event, paused) => cb(paused)
+    ipcRenderer.on('power:pause', listener)
+    return () => ipcRenderer.removeListener('power:pause', listener)
+  },
   openSettings: () => ipcRenderer.send('settings:open'),
   checkUpdate: () => ipcRenderer.invoke('update:check'),
 

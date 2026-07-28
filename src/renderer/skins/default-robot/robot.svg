@@ -1,4 +1,12 @@
 <svg class="r-svg" viewBox="0 0 240 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="小V">
+  <defs>
+    <!-- 蒸汽柔和边缘用径向渐变，代替昂贵的逐帧高斯模糊 -->
+    <radialGradient id="fx-steam-grad">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="55%" stop-color="#ffffff" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
   <ellipse class="r-shadow" cx="120" cy="232" rx="44" ry="9"/>
   <g class="r-hover">
     <g class="r-head">
@@ -9,6 +17,7 @@
       <rect class="r-ear r-ear-right" x="180" y="104" width="12" height="24" rx="6"/>
       <rect class="r-head-shell" x="58" y="64" width="124" height="100" rx="30"/>
       <rect class="r-face" x="74" y="82" width="92" height="64" rx="18"/>
+      <rect class="r-face-flash" x="74" y="82" width="92" height="64" rx="18"/>
       <g class="r-eyes">
         <rect class="r-eye-pill r-eye-left" x="94" y="100" width="15" height="22" rx="7.5"/>
         <rect class="r-eye-pill r-eye-right" x="131" y="100" width="15" height="22" rx="7.5"/>
@@ -34,10 +43,10 @@
   </g>
   <!-- 粒子特效层：放在 SVG 内，随机器人几何一起缩放，位置永不漂移 -->
   <g class="r-fx">
-    <circle class="fx-steam s1" cx="68" cy="64" r="7"/>
-    <circle class="fx-steam s2" cx="174" cy="64" r="7"/>
-    <circle class="fx-steam s3" cx="82" cy="52" r="7"/>
-    <circle class="fx-steam s4" cx="160" cy="52" r="7"/>
+    <circle class="fx-steam s1" cx="68" cy="64" r="7" style="fill:url(#fx-steam-grad)"/>
+    <circle class="fx-steam s2" cx="174" cy="64" r="7" style="fill:url(#fx-steam-grad)"/>
+    <circle class="fx-steam s3" cx="82" cy="52" r="7" style="fill:url(#fx-steam-grad)"/>
+    <circle class="fx-steam s4" cx="160" cy="52" r="7" style="fill:url(#fx-steam-grad)"/>
     <g transform="translate(190,92)"><path class="fx-sweat w1" d="M0 -6 C2.8 -2 4 0.5 4 2.5 A4 4 0 1 1 -4 2.5 C-4 0.5 -2.8 -2 0 -6 Z"/></g>
     <g transform="translate(50,100)"><path class="fx-sweat w2" d="M0 -6 C2.8 -2 4 0.5 4 2.5 A4 4 0 1 1 -4 2.5 C-4 0.5 -2.8 -2 0 -6 Z"/></g>
     <g transform="translate(30,134)"><rect class="fx-speed l1" x="-13" y="-1.5" width="26" height="3" rx="1.5"/></g>

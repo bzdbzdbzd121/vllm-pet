@@ -5,7 +5,7 @@
  *   VLLM_PET_DEV=1    加载 vite dev server（http://localhost:5173/pet.html）
  *   VLLM_PET_SMOKE=1  冒烟模式：临时 userData、隐藏窗口、截图后自动退出
  */
-import { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage } from 'electron'
+import { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, powerMonitor } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -363,6 +363,16 @@ if (!gotLock) {
         parentWindow: () => settingsWin || win
       })
       updater.scheduleAutoCheck()
+      // 锁屏/系统休眠时暂停动画与轮询（省电）；恢复时 poller.start() 立即重新采样
+      const setPowerPaused = (paused) => {
+        win?.webContents.send('power:pause', paused)
+        if (paused) poller?.stop()
+        else poller?.start()
+      }
+      powerMonitor.on('suspend', () => setPowerPaused(true))
+      powerMonitor.on('resume', () => setPowerPaused(false))
+      powerMonitor.on('lock-screen', () => setPowerPaused(true))
+      powerMonitor.on('unlock-screen', () => setPowerPaused(false))
       // 首次运行（未配置服务地址）自动打开设置窗口
       if (!store.load().apiBase) openSettingsWindow()
     } else {

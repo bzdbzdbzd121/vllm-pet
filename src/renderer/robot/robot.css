@@ -23,10 +23,24 @@
   -webkit-user-select: none;
 }
 
+/* 地面阴影层：由 pet.js splitShadow 从皮肤 SVG 剥离，不随 bob 上下浮动 */
+.pet-shadow {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* bob/shake/celebrate 挂在这个 HTML 包装层：transform 动画可走 GPU 合成层，
+   避免 SVG 子元素动画每帧都在主线程重绘整个机器人 */
 .pet-scale {
+  position: relative;
+  z-index: 1;
   width: 100%;
   height: 100%;
   transform-origin: 50% 100%;
+  will-change: transform;
+  animation: r-bob var(--bob-dur) ease-in-out infinite;
 }
 
 .pet-stage .r-svg {
@@ -92,9 +106,10 @@
   25% { transform: translateX(-1.6px); }
   75% { transform: translateX(1.6px); }
 }
-@keyframes r-face-flicker {
-  0%, 100% { filter: brightness(1); }
-  50% { filter: brightness(1.45); }
+/* 脸部闪烁用叠加层 opacity 实现：filter 动画每帧重算滤镜，代价太高 */
+@keyframes r-face-flash {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 0.2; }
 }
 @keyframes r-celebrate {
   0% { transform: translateY(0) scale(1, 1); }
@@ -104,7 +119,8 @@
   100% { transform: translateY(0) scale(1, 1); }
 }
 
-.r-hover { animation: r-bob var(--bob-dur) ease-in-out infinite; }
+/* 脸部闪烁叠加层（默认皮肤 SVG 内含此矩形；自定义皮肤没有则不闪，无害降级） */
+.r-face-flash { fill: var(--c-eye); opacity: 0; }
 .r-shadow { animation: r-shadow-bob var(--bob-dur) ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
 .r-head { transform-box: fill-box; transform-origin: 50% 92%; }
 .r-eye-pill { transform-box: fill-box; transform-origin: center; animation: r-blink var(--blink-dur) linear infinite; }
@@ -118,7 +134,7 @@
 
 /* ---------- 状态：睡觉 ---------- */
 .st-sleeping { --bob-dur: 5.2s; --antenna-dur: 5s; }
-.st-sleeping .r-eye-pill { opacity: 0; }
+.st-sleeping .r-eye-pill { opacity: 0; animation: none; } /* 不可见元素必须停掉动画，否则每帧白重绘 */
 .st-sleeping .r-eye-closed { opacity: 1; }
 .st-sleeping .r-antenna-glow { opacity: 0.12; animation: none; }
 .st-sleeping .r-antenna-bulb { fill: var(--c-body-shade); }
@@ -141,27 +157,27 @@
 
 /* ---------- 状态：推理中 · 重载 ---------- */
 .st-busy-3 { --bob-dur: 0.88s; --antenna-dur: 0.5s; }
-.st-busy-3 .r-hover { animation: r-bob 0.88s ease-in-out infinite, r-shake 0.2s linear infinite; }
-.st-busy-3 .r-eye-pill { opacity: 0; }
+.st-busy-3 .pet-scale { animation: r-bob 0.88s ease-in-out infinite, r-shake 0.2s linear infinite; }
+.st-busy-3 .r-eye-pill { opacity: 0; animation: none; }
 .st-busy-3 .r-eye-squeeze { opacity: 1; }
 .st-busy-3 .r-mouth { opacity: 0; }
 .st-busy-3 .r-mouth-bar { opacity: 1; }
-.st-busy-3 .r-face { animation: r-face-flicker 0.9s ease-in-out infinite; }
+.st-busy-3 .r-face-flash { animation: r-face-flash 0.9s ease-in-out infinite; }
 .st-busy-3 .r-chest { animation: r-chest-blink 0.55s ease-in-out infinite; }
 .st-busy-3 .r-arm-left { animation: r-bob 0.88s ease-in-out infinite; }
 .st-busy-3 .r-arm-right { animation: r-bob 0.88s ease-in-out infinite reverse; }
 
 /* ---------- 状态：离线 ---------- */
 .st-offline { --bob-dur: 5.2s; }
-.st-offline .r-hover { filter: grayscale(0.85) brightness(0.82); }
+.st-offline .pet-scale { filter: grayscale(0.85) brightness(0.82); } /* 静态滤镜只栅格化一次，可保留 */
 .st-offline .r-antenna-glow { animation: none; opacity: 0; }
 .st-offline .r-antenna-bulb { fill: #8a949a; }
 .st-offline .r-eye-pill { animation: none; transform: scaleY(0.35); }
 .st-offline .r-mouth { transform: rotate(180deg); transform-box: fill-box; transform-origin: center; }
 
 /* ---------- 瞬态：完成庆祝 ---------- */
-.is-celebrating .r-hover { animation: r-celebrate 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) 1; }
-.is-celebrating .r-eye-pill { opacity: 0; }
+.is-celebrating .pet-scale { animation: r-celebrate 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) 1; }
+.is-celebrating .r-eye-pill { opacity: 0; animation: none; }
 .is-celebrating .r-eye-arc { opacity: 1; }
 .is-celebrating .r-cheek { opacity: 0.9; }
 
@@ -176,7 +192,7 @@
 .fx-steam {
   fill: #ffffff;
   opacity: 0;
-  filter: blur(1.6px);
+  /* 不用 filter: blur —— 动画中每帧重算高斯模糊太贵；默认皮肤改用径向渐变获得柔和边缘 */
   transform-box: fill-box;
   transform-origin: center;
 }
@@ -281,6 +297,7 @@
    ============================================================ */
 .pet-status {
   position: absolute;
+  z-index: 2;
   box-sizing: content-box; /* JS 按文本宽度写入 width，须不受页面 border-box reset 影响 */
   /* 舞台内底部：紧贴地面阴影下方（阴影 y≈223-241），不遮宠物本体 */
   top: calc(100% - 8px); left: 50%;
@@ -303,6 +320,9 @@
   pointer-events: none;
 }
 .pet-stage.show-status .pet-status { opacity: 1; }
+
+/* 锁屏/系统休眠时主进程广播暂停：冻结一切动画（含合成层动画），省电 */
+.power-paused, .power-paused * { animation-play-state: paused !important; }
 
 /* ============================================================
    设置气泡面板
