@@ -46,6 +46,19 @@ test('downloadFile: HTTP 错误抛异常且不留下完整假象', async (t) => 
   assert.equal(fs.existsSync(dest), false)
 })
 
+test('downloadFile: 支持注入自定义 fetch（如 Electron net.fetch 走系统代理）', async () => {
+  const dest = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'dl-')), 'f.bin')
+  const calls = []
+  const fakeFetch = async (url, init) => {
+    calls.push([url, init?.headers?.['User-Agent']])
+    return new Response('proxied-bytes', { status: 200, headers: { 'content-length': '13' } })
+  }
+  const n = await downloadFile('https://example.com/pkg.zip', dest, undefined, undefined, fakeFetch)
+  assert.equal(fs.readFileSync(dest, 'utf8'), 'proxied-bytes')
+  assert.equal(n, 13)
+  assert.deepEqual(calls, [['https://example.com/pkg.zip', 'vllm-pet-updater']])
+})
+
 const HAS_DITTO = process.platform === 'darwin'
 
 test('extractZip + findAppBundle: 解压并定位 .app', { skip: !HAS_DITTO && '仅 macOS（ditto）验证' }, async (t) => {

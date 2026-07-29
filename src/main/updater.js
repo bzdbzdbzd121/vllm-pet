@@ -10,7 +10,7 @@
  *   Linux（AppImage）    — 下载新 AppImage 到同目录 .new → 守护脚本换文件（.old 备份）→ 重启
  *   其他（deb / 便携版 / 开发模式 / 无写权限）— 自动降级为跳 Release 页手动更新
  */
-import { app, dialog, shell } from 'electron'
+import { app, dialog, shell, net } from 'electron'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -101,13 +101,13 @@ export class UpdateService {
     }
   }
 
-  /** 拉取最新 Release 并解析；失败返回 null */
+  /** 拉取最新 Release 并解析；失败返回 null。net.fetch 走 Chromium 网络栈，遵循系统代理 */
   async _fetchLatest() {
     const api = process.env.VLLM_PET_UPDATE_API || releasesApiUrl(this.repo)
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), CHECK_TIMEOUT_MS)
     try {
-      const res = await fetch(api, {
+      const res = await net.fetch(api, {
         headers: { 'User-Agent': 'vllm-pet-updater', Accept: 'application/vnd.github+json' },
         signal: ctrl.signal
       })
@@ -173,13 +173,14 @@ export class UpdateService {
         : path.join(updateDir, `vllm-pet-${release.version}.${ext}`)
     this.onProgress(`正在下载 v${release.version}…`)
     try {
+      // net.fetch 走 Chromium 网络栈：大文件下载同样遵循系统代理
       await downloadFile(asset.url, pkgPath, (received, total) => {
         this.onProgress(
           total > 0
             ? `正在下载 v${release.version} ${Math.round((received / total) * 100)}%`
             : `正在下载 v${release.version} ${(received / 1024 / 1024).toFixed(0)}MB`
         )
-      })
+      }, undefined, net.fetch)
     } catch (err) {
       await this._info('下载失败', `${String(err?.message || err)}\n\n可前往发布页手动下载。`, true)
       return

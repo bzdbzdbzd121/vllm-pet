@@ -16,13 +16,15 @@ const execFileP = promisify(execFile)
  * @param {string} dest 目标文件路径（父目录自动创建）
  * @param {(received: number, total: number) => void} [onProgress] total 可能为 0（未知）
  * @param {number} [timeoutMs]
+ * @param {typeof fetch} [fetchImpl] 自定义 fetch——主进程传 Electron net.fetch
+ *   走 Chromium 网络栈（自动遵循系统代理）；默认全局 fetch（undici，不走代理，便于单测）
  * @returns {Promise<number>} 实际写入字节数
  */
-export async function downloadFile(url, dest, onProgress, timeoutMs = 120_000) {
+export async function downloadFile(url, dest, onProgress, timeoutMs = 120_000, fetchImpl = fetch) {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
-    const res = await fetch(url, {
+    const res = await fetchImpl(url, {
       redirect: 'follow',
       headers: { 'User-Agent': 'vllm-pet-updater' },
       signal: ctrl.signal
