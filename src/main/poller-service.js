@@ -65,10 +65,11 @@ export class PollerService {
     const startedAt = Date.now()
 
     // 1. 健康检查（/health 失败时用 /v1/models 兜底）
-    let healthOk = await tryHealth(base + config.healthPath, headers)
+    const netErrs = []
+    let healthOk = await tryHealth(base + config.healthPath, headers, netErrs)
     let models = []
     if (!healthOk) {
-      const res = await tryFetch(base + '/v1/models', headers)
+      const res = await tryFetch(base + '/v1/models', headers, netErrs)
       healthOk = !!res?.ok
       if (res?.ok) {
         const data = await res.json().catch(() => null)
@@ -103,7 +104,7 @@ export class PollerService {
       tokensPerSec,
       latencyMs: Date.now() - startedAt,
       models,
-      error: healthOk ? null : '服务不可达'
+      error: healthOk ? null : describeNetError(netErrs[0])
     })
   }
 
@@ -124,19 +125,32 @@ export class PollerService {
   }
 }
 
-async function tryHealth(url, headers) {
-  const res = await tryFetch(url, headers)
+async function tryHealth(url, headers, errs) {
+  const res = await tryFetch(url, headers, errs)
   return !!res?.ok
 }
 
-async function tryFetch(url, headers) {
+async function tryFetch(url, headers, errs) {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS)
   try {
-    return await fetch(url, { headers, signal: ctrl.signal })
-  } catch {
+    // connection: close —— 每次全新连接，避免睡眠唤醒/网络切换后复用已死的 keep-alive 连接
+    return await fetch(url, { headers: { connection: 'close', ...headers }, signal: ctrl.signal })
+  } catch (err) {
+    errs?.push(err)
     return null
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** 把底层网络错误翻译成一句可展示的排查提示（undici 的真实原因在 err.cause.code） */
+export function describeNetError(err) {
+  const code = err?.cause?.code || err?.code || ''
+  if (code === 'EPERM') return '无本地网络权限（系统设置→隐私与安全性→本地网络，允许小V）'
+  if (code === 'ECONNREFUSED') return '连接被拒绝（服务未启动或端口不对）'
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return '地址无法解析（检查服务地址）'
+  if (code === 'ECONNRESET' || code === 'EPIPE') return '连接被重置'
+  if (code === 'ETIMEDOUT' || err?.name === 'TimeoutError' || err?.name === 'AbortError') return '连接超时'
+  return '服务不可达'
 }

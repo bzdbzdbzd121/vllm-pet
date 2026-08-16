@@ -19,6 +19,10 @@ mac:
   target:
     - dmg
     - zip
+  extendInfo:
+    # macOS 14/15+ 本地网络权限：缺少该描述时系统不弹授权窗、静默拦截
+    # 192.168.x.x 等局域网连接（表现：浏览器能开、应用报"服务不可达"）
+    NSLocalNetworkUsageDescription: 小V需要访问局域网中的 vLLM 推理服务以获取运行状态。
 
 win:
   target:
