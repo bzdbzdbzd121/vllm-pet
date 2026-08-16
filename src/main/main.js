@@ -84,6 +84,8 @@ function createWindow() {
     }
   })
   win.setAlwaysOnTop(config.window?.alwaysOnTop !== false, 'screen-saver')
+  // 在所有桌面空间可见（macOS Spaces / Linux 工作区）：左右切换桌面时宠物不消失
+  win.setVisibleOnAllWorkspaces(config.window?.allWorkspaces !== false, { visibleOnFullScreen: true })
   if (config.window?.clickThrough) win.setIgnoreMouseEvents(true, { forward: true })
 
   if (DEV) {
@@ -105,6 +107,7 @@ function applyWindowConfig(config) {
   if (!win) return
   win.setSize(...windowSize(config))
   win.setAlwaysOnTop(config.window?.alwaysOnTop !== false, 'screen-saver')
+  win.setVisibleOnAllWorkspaces(config.window?.allWorkspaces !== false, { visibleOnFullScreen: true })
   win.setIgnoreMouseEvents(!!config.window?.clickThrough, { forward: true })
   if (typeof config.window?.opacity === 'number') win.setOpacity(config.window.opacity)
 }
@@ -134,6 +137,13 @@ function rebuildTrayMenu(progressText = '') {
       checked: config.window?.alwaysOnTop !== false,
       click: (item) => store.save({ window: { alwaysOnTop: item.checked } }) && applyAndRefresh()
     },
+    // Windows 没有桌面空间概念，该选项仅 macOS/Linux 展示
+    ...(process.platform === 'win32' ? [] : [{
+      label: '在所有桌面显示',
+      type: 'checkbox',
+      checked: config.window?.allWorkspaces !== false,
+      click: (item) => store.save({ window: { allWorkspaces: item.checked } }) && applyAndRefresh()
+    }]),
     {
       label: '鼠标穿透',
       type: 'checkbox',

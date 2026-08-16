@@ -17,7 +17,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   skin: 'default-robot',
   idleSleepMinutes: 10,
   update: { autoCheck: true },
-  window: { alwaysOnTop: true, clickThrough: false, scale: 1, opacity: 1, x: null, y: null }
+  window: { alwaysOnTop: true, clickThrough: false, scale: 1, opacity: 1, x: null, y: null, allWorkspaces: true }
 })
 
 function deepMerge(base, patch) {

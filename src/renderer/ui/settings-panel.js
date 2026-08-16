@@ -96,6 +96,7 @@ export class SettingsPanel {
         <div><label>状态文字大小 (px)<span class="section-note">不随体型缩放变化</span></label><input type="number" name="statusFontSize" min="9" max="24" step="1" value="${config.statusFontSize ?? 11}"></div>
       </div>
       <div class="check"><input type="checkbox" name="alwaysOnTop" ${config.window?.alwaysOnTop !== false ? 'checked' : ''}><span>窗口置顶</span></div>
+      <div class="check"><input type="checkbox" name="allWorkspaces" ${config.window?.allWorkspaces !== false ? 'checked' : ''}><span>在所有桌面显示（macOS 切换桌面空间时宠物不消失）</span></div>
       <div class="check"><input type="checkbox" name="clickThrough" ${config.window?.clickThrough ? 'checked' : ''}><span>鼠标穿透（托盘菜单可恢复）</span></div>
 
       <div class="section">⬆️ 更新</div>
@@ -148,6 +149,7 @@ export class SettingsPanel {
         },
         window: {
           alwaysOnTop: get('alwaysOnTop').checked,
+          allWorkspaces: get('allWorkspaces').checked,
           clickThrough: get('clickThrough').checked,
           scale: num('scale', 1)
         },
