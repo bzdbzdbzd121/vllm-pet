@@ -111,6 +111,41 @@ test('formatStatusLine：tok/s 显示与隐藏规则', () => {
   }
 })
 
+test('formatStatusLine：showKvCache=false 时省略 KV 段，其余段不受影响', () => {
+  const s = snap({ state: 'busy', intensity: 2, running: 6, waiting: 2, tokensPerSec: 86.4, cacheUsage: 0.7 })
+  assert.equal(formatStatusLine(s, { showKvCache: false }), '推理中\u00a0×6 · 队列\u00a02 · 86\u00a0tok/s')
+  assert.equal(formatStatusLine(s, { showKvCache: true }), '推理中\u00a0×6 · 队列\u00a02 · 86\u00a0tok/s · KV\u00a070%')
+  // 不传 opts 保持默认显示（向后兼容）
+  assert.equal(formatStatusLine(s), '推理中\u00a0×6 · 队列\u00a02 · 86\u00a0tok/s · KV\u00a070%')
+})
+
+test('状态机：showKvCache 可构造配置并热切换，立即重渲染当前状态文本', (t) => {
+  const lines = []
+  const machine = new PetStateMachine({
+    onVisualState: () => {},
+    onStatusLine: (text) => lines.push(text),
+    showKvCache: false
+  })
+  t.after(() => machine.dispose())
+  machine.update(snap({ state: 'busy', intensity: 2, running: 6, waiting: 2, cacheUsage: 0.7 }))
+  assert.equal(lines.at(-1), '推理中\u00a0×6 · 队列\u00a02')
+  machine.setShowKvCache(true)
+  assert.equal(lines.at(-1), '推理中\u00a0×6 · 队列\u00a02 · KV\u00a070%')
+  // 同值重复设置不重复触发
+  const count = lines.length
+  machine.setShowKvCache(true)
+  assert.equal(lines.length, count)
+  machine.setShowKvCache(false)
+  assert.equal(lines.at(-1), '推理中\u00a0×6 · 队列\u00a02')
+
+  // 尚无快照时切换不误发空文本（否则会抹掉“连接中…”引导文案）
+  const early = []
+  const fresh = new PetStateMachine({ onVisualState: () => {}, onStatusLine: (text) => early.push(text) })
+  t.after(() => fresh.dispose())
+  fresh.setShowKvCache(false)
+  assert.deepEqual(early, [])
+})
+
 test('formatStatusLine：读不到负载指标时，空闲文案带提示（SGLang 未开 --enable-metrics 等）', () => {
   assert.equal(formatStatusLine(snap({ state: 'idle', hint: '未读到负载指标' })), '空闲中（未读到负载指标）')
   // 有 hint 但非空闲态时不拼接（离线/连接中文案已各自说明原因）

@@ -2,7 +2,7 @@
  * settings-panel.js — 设置面板（独立设置窗口 / 预览页内嵌 共用）
  *
  * 可配置：服务连接、状态切换条件（各档并发/KV 阈值）、动画映射（每档用哪个动画）、
- * 皮肤、体型缩放、窗口置顶/穿透。
+ * 皮肤、体型缩放、状态文本（显隐 / 字号 / KV cache 百分比）、窗口置顶/穿透。
  */
 import { listAvailableSkins } from '../skins/skin-loader.js'
 
@@ -102,6 +102,7 @@ export class SettingsPanel {
         </div>
       </div>
       <div class="check"><input type="checkbox" name="showStatus" ${config.showStatus !== false ? 'checked' : ''}><span>显示状态文本（宠物下方的气泡）</span></div>
+      <div class="check"><input type="checkbox" name="showKvCache" ${config.showKvCache !== false ? 'checked' : ''}><span>显示 KV cache 百分比（状态文本里的“KV 73%”）</span></div>
       <div class="row">
         <div><label>状态文字大小 (px)<span class="section-note">不随体型缩放变化</span></label><input type="number" name="statusFontSize" min="9" max="24" step="1" value="${config.statusFontSize ?? 11}"></div>
       </div>
@@ -146,6 +147,7 @@ export class SettingsPanel {
         pollIntervalMs: num('pollIntervalMs', 2000),
         skin: get('skin').value,
         showStatus: get('showStatus').checked,
+        showKvCache: get('showKvCache').checked,
         statusFontSize: num('statusFontSize', 11),
         thresholds: {
           light: num('tLight', 1),

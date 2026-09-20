@@ -16,16 +16,19 @@ export class PetStateMachine {
    *   onStatusLine?: (text: string) => void,
    *   onCelebrate?: () => void,
    *   idleSleepMinutes?: number,
-   *   stateMap?: { light?: string, medium?: string, heavy?: string }
+   *   stateMap?: { light?: string, medium?: string, heavy?: string },
+   *   showKvCache?: boolean
    * }} opts
    */
-  constructor({ onVisualState, onStatusLine, onCelebrate, idleSleepMinutes = 10, stateMap }) {
+  constructor({ onVisualState, onStatusLine, onCelebrate, idleSleepMinutes = 10, stateMap, showKvCache = true }) {
     this.onVisualState = onVisualState
     this.onStatusLine = onStatusLine || (() => {})
     this.onCelebrate = onCelebrate || (() => {})
     this.idleSleepMs = Math.max(1, idleSleepMinutes) * 60_000
     this.stateMap = { ...DEFAULT_STATE_MAP }
     this.setStateMap(stateMap)
+    this.showKvCache = showKvCache !== false
+    this.lastSnap = null
     this.visual = 'connecting'
     this.idleSince = null
     this._timer = setInterval(() => this._checkSleep(), SLEEP_CHECK_MS)
@@ -42,6 +45,20 @@ export class PetStateMachine {
         this.stateMap[key] = map[key]
       }
     }
+  }
+
+  /** 状态文本里是否显示 KV cache 百分比（只影响显示，缓存占用仍参与负载分档） */
+  setShowKvCache(v) {
+    const next = v !== false
+    if (next === this.showKvCache) return
+    this.showKvCache = next
+    this._emitStatusLine()
+  }
+
+  /** 用最近一次快照重新渲染状态文本（配置变更后立即生效，不必等下一轮轮询） */
+  _emitStatusLine() {
+    if (!this.lastSnap) return
+    this.onStatusLine(formatStatusLine(this.lastSnap, { showKvCache: this.showKvCache }))
   }
 
   /** @param {object} snap StatusSnapshot */
@@ -77,7 +94,8 @@ export class PetStateMachine {
       this.visual = next
       this.onVisualState(next, snap)
     }
-    this.onStatusLine(formatStatusLine(snap))
+    this.lastSnap = snap
+    this._emitStatusLine()
   }
 
   _checkSleep() {
@@ -92,8 +110,9 @@ export class PetStateMachine {
   }
 }
 
-/** 状态气泡文本，例如 "推理中 ×6 · 队列 2 · 86 tok/s · KV 73%" */
-export function formatStatusLine(snap) {
+/** 状态气泡文本，例如 "推理中 ×6 · 队列 2 · 86 tok/s · KV 73%"
+ *  opts.showKvCache=false 时省略 KV 段（负载分档不受影响） */
+export function formatStatusLine(snap, { showKvCache = true } = {}) {
   if (!snap) return ''
   switch (snap.state) {
     case 'offline':
@@ -109,7 +128,7 @@ export function formatStatusLine(snap) {
         : snap.prefillActive ? '预填充中' : '推理中']
       if (snap.waiting) parts.push(`队列 ${snap.waiting}`)
       if (snap.tokensPerSec > 0) parts.push(`${formatTps(snap.tokensPerSec)} tok/s`) // 0 / null 不显示
-      if (snap.cacheUsage != null) parts.push(`KV ${Math.round(snap.cacheUsage * 100)}%`)
+      if (showKvCache && snap.cacheUsage != null) parts.push(`KV ${Math.round(snap.cacheUsage * 100)}%`)
       return parts.join(' · ')
     }
     case 'idle':

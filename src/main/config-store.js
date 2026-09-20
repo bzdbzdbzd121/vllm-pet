@@ -14,6 +14,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   thresholds: { light: 1, medium: 4, heavy: 16, cacheHeavy: 0.85 },
   stateMap: { light: 'busy-1', medium: 'busy-2', heavy: 'busy-3' },
   showStatus: true,
+  showKvCache: true, // 状态文本里是否显示 KV cache 百分比（只影响显示，不影响负载分档）
   statusFontSize: 11,
   skin: 'default-robot',
   idleSleepMinutes: 10,

@@ -36,6 +36,7 @@ async function boot() {
   const machine = new PetStateMachine({
     idleSleepMinutes: config.idleSleepMinutes ?? 10,
     stateMap: config.stateMap,
+    showKvCache: config.showKvCache !== false,
     onVisualState: (visual) => pet.setState(visual),
     onStatusLine: (text) => {
       lastStatusText = text
@@ -116,6 +117,8 @@ async function boot() {
       machine.setStateMap(saved.stateMap)
       statusEnabled = saved.showStatus !== false
       pet.setStatusLine(statusEnabled ? lastStatusText : '')
+      // 切换 KV 百分比后立即重渲染当前状态文本（内部会回调 onStatusLine）
+      machine.setShowKvCache(saved.showKvCache !== false)
       pet.applySkin(await resolveSkin(saved.skin, null))
       Object.assign(config, saved)
     }

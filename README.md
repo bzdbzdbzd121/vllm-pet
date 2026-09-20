@@ -146,6 +146,7 @@ npm run dev:desktop   # vite dev server + Electron 联动，改渲染层代码�
 | `thresholds` | `{light:1, medium:4, heavy:16, cacheHeavy:0.85}` | 负载分档阈值（并发 = running + waiting） |
 | `stateMap` | `{light:busy-1, medium:busy-2, heavy:busy-3}` | 各负载档位播放的动画（busy-1 轻快 / busy-2 中速 / busy-3 狂热） |
 | `showStatus` | `true` | 是否在宠物下方显示状态文本（"铭牌"气泡） |
+| `showKvCache` | `true` | 状态文本里是否显示 KV cache 百分比（如 `KV 73%`）；关闭只影响显示，KV 占用仍参与负载分档 |
 | `statusFontSize` | `11` | 状态文本字号（px，独立于体型缩放） |
 | `skin` | `default-robot` | 皮肤名 |
 | `idleSleepMinutes` | `10` | 连续空闲多久后睡觉 |

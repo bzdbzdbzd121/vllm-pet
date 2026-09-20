@@ -233,7 +233,7 @@ sleep 2 && pkill -f "mock-vllm.mjs --port 18099" && sleep 9
 **新增一个配置项**（以 `fooBar` 为例，一处都不能漏）：
 1. `src/main/config-store.js` 默认值
 2. `src/renderer/status/providers.js` Mock 默认值
-3. `settings.html` / `src/renderer/settings-main.js` 设置窗口表单 + 保存
+3. `src/renderer/ui/settings-panel.js` 设置窗口/预览页共用表单 + 保存
 4. 消费方（`pet-main.js#applyConfig` / `poller-service.js` / `main.js#applyWindowConfig`）
 5. README 配置表
 
