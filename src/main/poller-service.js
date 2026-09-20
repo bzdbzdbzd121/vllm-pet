@@ -11,7 +11,7 @@
  * 配置 backend 可强制指定引擎：'auto'（默认，自动识别）/ 'vllm' / 'sglang'。
  * 只有 auto 与 sglang 才走第 3 步（vLLM 没有该接口；auto 下探测失败会退避 60s）。
  */
-import { parsePrometheusMetrics, parseLoadsResponse, deriveState, sampleGenerationRate, BACKENDS } from '../shared/status-core.js'
+import { parsePrometheusMetrics, parseLoadsResponse, deriveState, sampleGenerationRate, sampleActivity, BACKENDS } from '../shared/status-core.js'
 
 const FETCH_TIMEOUT_MS = 4000
 /** SGLang 负载接口（/get_load 已废弃；不带 include 会返回全部段落） */
@@ -32,6 +32,7 @@ export class PollerService {
     this._running = false
     this._everConnected = false
     this._lastGenSample = null // { value, at, source }：上一次生成 token counter 采样
+    this._lastActivity = null // { prefillTokens, decodeTokens, usedTokens, at }：上一次活动采样
     this._loadsUnsupported = false // 服务不支持 /v1/loads（探过一次就不再每轮都打）
     this._loadsCheckedAt = 0
   }
@@ -52,6 +53,7 @@ export class PollerService {
     // 配置可能换了服务地址/引擎，重新探测负载接口
     this._loadsUnsupported = false
     this._lastGenSample = null
+    this._lastActivity = null
     this.start()
   }
 
@@ -115,7 +117,12 @@ export class PollerService {
     }
 
     if (healthOk) this._everConnected = true
-    const { state, intensity } = deriveState({ healthOk, metrics: load }, config.thresholds)
+
+    // 活动采样：SGLang 的并发 gauge 看不到正在 prefill 的请求（见 status-core 注释）
+    const activity = sampleActivity(load, this._lastActivity)
+    this._lastActivity = activity.sample
+
+    const { state, intensity } = deriveState({ healthOk, metrics: load, active: activity.active }, config.thresholds)
 
     // 生成吞吐：优先 SGLang 每次迭代累加的 counter，其次累计 counter 求差，最后用服务自报吞吐
     const { tokensPerSec, sample } = sampleGenerationRate(load, this._lastGenSample)
@@ -126,6 +133,7 @@ export class PollerService {
       intensity,
       backend: load?.backend ?? null,
       loadSource,
+      prefillActive: activity.prefillActive,
       running: load?.running ?? 0,
       waiting: load?.waiting ?? 0,
       cacheUsage: load?.cacheUsage ?? null,
@@ -153,6 +161,7 @@ export class PollerService {
       intensity: 0,
       backend: null,
       loadSource: 'none',
+      prefillActive: false,
       running: 0,
       waiting: 0,
       cacheUsage: null,

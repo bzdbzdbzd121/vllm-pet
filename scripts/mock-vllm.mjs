@@ -11,6 +11,10 @@
  *   node scripts/mock-vllm.mjs --backend sglang --no-metrics
  *                                                       # 模拟 SGLang 未加 --enable-metrics：
  *                                                       # /metrics 返回 404，桌宠应回退 /v1/loads
+ *   node scripts/mock-vllm.mjs --prefill                # 模拟长 prompt 的 chunked prefill：
+ *                                                       # 并发 gauge 恒为 0（SGLang 盲区），
+ *                                                       # 但 prefill/KV 在增长 —— 桌宠应显示"预填充中"而非"空闲中"
+
  */
 import http from 'node:http'
 
@@ -30,6 +34,13 @@ const CYCLE = args.includes('--cycle')
 const BACKEND = argStr('backend', 'vllm') === 'sglang' ? 'sglang' : 'vllm'
 /** 模拟 SGLang 没开 --enable-metrics：/metrics 不存在 */
 const NO_METRICS = args.includes('--no-metrics')
+/**
+ * 模拟长 prompt 的 chunked prefill：SGLang 的并发 gauge 只统计 running_batch，
+ * 正在 prefill 的请求被排除在外（见 status-core.js 注释），所以如实上报 running=waiting=0，
+ * 但 prefill 计数与 KV 占用持续增长 —— 用来验证桌宠不会把它误判成"空闲"。
+ */
+const PREFILL = args.includes('--prefill')
+const PREFILL_TPS = argNum('prefill-tps', 1200) // 每个 poll 间隔推进的 prefill token 量
 
 const PHASES = [
   { name: 'idle', running: 0, waiting: 0, cache: 0.28 },
@@ -48,7 +59,9 @@ if (CYCLE) {
 }
 
 function current() {
-  return CYCLE ? PHASES[phaseIndex] : { name: 'fixed', ...fixed }
+  const phase = CYCLE ? PHASES[phaseIndex] : { name: 'fixed', ...fixed }
+  // SGLang 的盲区：正在 prefill 的请求不在 running_batch / waiting_queue 里
+  return PREFILL ? { ...phase, running: 0, waiting: 0 } : phase
 }
 
 // token counters——两组语义要区分（真实 SGLang 就是这样）：
@@ -60,6 +73,8 @@ const PROMPT_PER_REQ = 9
 const SETTLE_MS = 3000 // 模拟平均 3s 完成一批请求并结算累计 counter
 let realtimeGenTotal = 900000
 let realtimePrefillTotal = 260000
+let usedTokens = 2600 // KV 池已占用 token 数（绝对值）
+const MAX_TOTAL_TOKENS = 131072
 let genTotal = 120000
 let promptTotal = 38000
 let unsettledGen = 0
@@ -70,9 +85,20 @@ function advanceTokens(running) {
   const now = Date.now()
   const dt = (now - lastAdvance) / 1000
   lastAdvance = now
-  if (!(dt > 0) || running <= 0) return
-  const gen = Math.round(running * GEN_PER_REQ * dt)
-  const prompt = Math.round(running * PROMPT_PER_REQ * dt)
+  if (!(dt > 0)) return
+  let gen = 0
+  let prompt = 0
+  if (PREFILL) {
+    // 只有 prefill 在推进：没有 decode token，KV 池持续装 token
+    prompt = Math.round(PREFILL_TPS * dt)
+    usedTokens += prompt
+  } else if (running > 0) {
+    gen = Math.round(running * GEN_PER_REQ * dt)
+    prompt = Math.round(running * PROMPT_PER_REQ * dt)
+    usedTokens += gen + prompt
+  } else {
+    return
+  }
   realtimeGenTotal += gen
   realtimePrefillTotal += prompt
   unsettledGen += gen
@@ -121,6 +147,9 @@ function sglangMetrics({ running, waiting, cache }) {
     '# HELP sglang:num_queue_reqs The number of requests in the waiting queue.',
     '# TYPE sglang:num_queue_reqs gauge',
     `sglang:num_queue_reqs${SGLANG_LABELS} ${waiting}.0`,
+    '# HELP sglang:num_used_tokens The number of used tokens.',
+    '# TYPE sglang:num_used_tokens gauge',
+    `sglang:num_used_tokens${SGLANG_LABELS} ${usedTokens}.0`,
     '# HELP sglang:token_usage The token usage.',
     '# TYPE sglang:token_usage gauge',
     `sglang:token_usage${SGLANG_LABELS} ${cache}`,
@@ -148,8 +177,8 @@ function loadsBody({ running, waiting, cache }) {
     dp_rank: 0,
     num_running_reqs: running,
     num_waiting_reqs: waiting,
-    num_used_tokens: Math.round(cache * 8192),
-    max_total_num_tokens: 8192,
+    num_used_tokens: usedTokens,
+    max_total_num_tokens: MAX_TOTAL_TOKENS,
     token_usage: cache,
     gen_throughput: running * GEN_PER_REQ,
     cache_hit_rate: 0.12,
@@ -203,5 +232,6 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   const metrics = NO_METRICS ? '/metrics(404)' : '/metrics'
   const loads = BACKEND === 'sglang' ? ' /v1/loads' : ''
-  console.log(`[mock-vllm] http://127.0.0.1:${PORT}  backend=${BACKEND} (health /v1/models ${metrics}${loads})${CYCLE ? ' --cycle 每 8s 换档' : ''}`)
+  const prefill = PREFILL ? ' --prefill 模拟 chunked prefill（并发 gauge 恒为 0，prefill/KV 仍在增长）' : ''
+  console.log(`[mock-vllm] http://127.0.0.1:${PORT}  backend=${BACKEND} (health /v1/models ${metrics}${loads})${CYCLE ? ' --cycle 每 8s 换档' : ''}${prefill}`)
 })

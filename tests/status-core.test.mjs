@@ -6,6 +6,7 @@ import {
   deriveState,
   tokenRate,
   sampleGenerationRate,
+  sampleActivity,
   DEFAULT_THRESHOLDS
 } from '../src/shared/status-core.js'
 
@@ -29,6 +30,9 @@ sglang:num_queue_reqs{model_name="qwen3",engine_type="unified",tp_rank="0",pp_ra
 # HELP sglang:token_usage The token usage
 # TYPE sglang:token_usage gauge
 sglang:token_usage{model_name="qwen3",engine_type="unified",tp_rank="0",pp_rank="0",moe_ep_rank="0"} 0.66
+# HELP sglang:num_used_tokens The number of used tokens
+# TYPE sglang:num_used_tokens gauge
+sglang:num_used_tokens{model_name="qwen3",engine_type="unified",tp_rank="0",pp_rank="0",moe_ep_rank="0"} 123859.0
 # HELP sglang:gen_throughput The generate throughput (token/s)
 # TYPE sglang:gen_throughput gauge
 sglang:gen_throughput{model_name="qwen3",engine_type="unified",tp_rank="0",pp_rank="0",moe_ep_rank="0"} 294.5
@@ -54,6 +58,8 @@ const EMPTY = {
   promptTokensTotal: null,
   genTokensTotal: null,
   realtimeGenTokensTotal: null,
+  prefillTokensTotal: null,
+  usedTokensTotal: null,
   genThroughput: null
 }
 
@@ -187,8 +193,8 @@ test('parseLoadsResponse: 解析 SGLang /v1/loads（多 DP 求和）', () => {
     version: '0.5.20',
     dp_rank_count: 2,
     loads: [
-      { dp_rank: 0, num_running_reqs: 4, num_waiting_reqs: 1, token_usage: 0.4, gen_throughput: 120.5 },
-      { dp_rank: 1, num_running_reqs: 6, num_waiting_reqs: 2, token_usage: 0.7, gen_throughput: 80 }
+      { dp_rank: 0, num_running_reqs: 4, num_waiting_reqs: 1, token_usage: 0.4, gen_throughput: 120.5, num_used_tokens: 4000 },
+      { dp_rank: 1, num_running_reqs: 6, num_waiting_reqs: 2, token_usage: 0.7, gen_throughput: 80, num_used_tokens: 6000 }
     ],
     aggregate: { total_running_reqs: 10, total_waiting_reqs: 3, avg_token_usage: 0.55 }
   }
@@ -199,6 +205,7 @@ test('parseLoadsResponse: 解析 SGLang /v1/loads（多 DP 求和）', () => {
   assert.equal(m.waiting, 3)
   assert.equal(m.cacheUsage, 0.7) // 取最大而非平均
   assert.equal(m.genThroughput, 200.5)
+  assert.equal(m.usedTokensTotal, 10000) // 无 counter 时用它当活动信号
   assert.equal(m.genTokensTotal, null) // 没有 counter：tok/s 由 genThroughput 兜底
 })
 
@@ -339,4 +346,70 @@ test('parseLoadsResponse: /v1/loads 无 counter，tok/s 由 gen_throughput 兜�
   const { tokensPerSec, sample } = sampleGenerationRate(load, null, 0)
   assert.equal(tokensPerSec, 126.5)
   assert.equal(sample, null)
+})
+
+test('parsePrometheusMetrics: prefill 迭代计数与 KV 占用（prefill 盲区靠它们识别）', () => {
+  const m = parsePrometheusMetrics(SGLANG_SAMPLE)
+  assert.equal(m.prefillTokensTotal, 8_128_902) // prefill_compute 8128902 + prefill_cache 0
+  assert.equal(m.usedTokensTotal, 123_859)
+})
+
+test('sampleActivity: 首样本不算活动（重启/改配置后不会立刻误报忙碌）', () => {
+  const load = { prefillTokensTotal: 100, realtimeGenTokensTotal: 50, usedTokensTotal: 10 }
+  const first = sampleActivity(load, null, 1000)
+  assert.equal(first.active, false)
+  assert.equal(first.prefillActive, false)
+  assert.deepEqual(first.sample, { prefillTokens: 100, decodeTokens: 50, usedTokens: 10, at: 1000 })
+  // 两帧时间戳相同时也不判定活动
+  assert.equal(sampleActivity(load, first.sample, 1000).active, false)
+})
+
+test('sampleActivity: prefill counter 增长 → 活动（SGLang chunked prefill 期间 running/waiting 都是 0）', () => {
+  const prev = { prefillTokens: 1000, decodeTokens: 0, usedTokens: 0, at: 1000 }
+  const { active, prefillActive } = sampleActivity(
+    { prefillTokensTotal: 4200, realtimeGenTokensTotal: 0, usedTokensTotal: 900 },
+    prev, 3000
+  )
+  assert.equal(active, true)
+  assert.equal(prefillActive, true)
+})
+
+test('sampleActivity: decode counter 增长 → 活动（并发 gauge 默认每 40 次迭代才刷新）', () => {
+  const prev = { prefillTokens: 1000, decodeTokens: 800, usedTokens: 900, at: 1000 }
+  const { active, prefillActive } = sampleActivity(
+    { prefillTokensTotal: 1000, realtimeGenTokensTotal: 820, usedTokensTotal: 900 },
+    prev, 3000
+  )
+  assert.equal(active, true)
+  assert.equal(prefillActive, false) // 不是 prefill：状态文本仍显示"推理中"
+})
+
+test('sampleActivity: 有 counter 时不拿 KV 占用增长当信号（防多 rank label 跳变误判）', () => {
+  const prev = { prefillTokens: 1000, decodeTokens: 800, usedTokens: 100, at: 1000 }
+  const beyond = sampleActivity(
+    { prefillTokensTotal: 1000, realtimeGenTokensTotal: 800, usedTokensTotal: 99999 },
+    prev, 3000
+  )
+  assert.equal(beyond.active, false)
+})
+
+test('sampleActivity: 无 counter（/v1/loads 路径）时用 KV 占用增长兜底', () => {
+  const prev = { prefillTokens: null, decodeTokens: null, usedTokens: 4000, at: 1000 }
+  assert.equal(sampleActivity({ usedTokensTotal: 9000 }, prev, 3000).active, true)
+  assert.equal(sampleActivity({ usedTokensTotal: 4000 }, prev, 3000).active, false)
+  assert.equal(sampleActivity({ usedTokensTotal: 1000 }, prev, 3000).active, false) // 回落（释放 KV）不算活动
+})
+
+test('sampleActivity: 全部持平 → 不活动（真空闲不能被误判成忙碌）', () => {
+  const load = { prefillTokensTotal: 5000, realtimeGenTokensTotal: 700, usedTokensTotal: 8000 }
+  const prev = { prefillTokens: 5000, decodeTokens: 700, usedTokens: 8000, at: 1000 }
+  assert.equal(sampleActivity(load, prev, 3000).active, false)
+})
+
+test('deriveState: gauge 为 0 但在推进 → busy（prefill 阶段不再误报空闲）', () => {
+  const metrics = { running: 0, waiting: 0, cacheUsage: 0.3 }
+  assert.deepEqual(deriveState({ healthOk: true, metrics, active: true }), { state: 'busy', intensity: 1 })
+  assert.deepEqual(deriveState({ healthOk: true, metrics, active: false }), { state: 'idle', intensity: 0 })
+  // 并发确实为 0 且无活动 → 空闲
+  assert.deepEqual(deriveState({ healthOk: true, metrics }), { state: 'idle', intensity: 0 })
 })

@@ -68,11 +68,11 @@ src/renderer/status/state-machine.js  快照 → 视觉状态（含 stateMap、�
 src/renderer/status/providers.js      IPC / Mock / 浏览器直连三种状态来源 + 默认配置
 src/renderer/ui/settings-panel.js     浏览器模式下的内嵌设置气泡
 src/renderer/skins/         皮肤加载器 + 内置皮肤（default-robot + 4 款换色）
-scripts/mock-vllm.mjs       假推理服务（--backend vllm|sglang、--no-metrics、--port/--running/--waiting/--cache/--cycle）
+scripts/mock-vllm.mjs       假推理服务（--backend vllm|sglang、--no-metrics、--prefill、--port/--running/--waiting/--cache/--cycle）
 scripts/probe-load.mjs      排障用：打印某地址的采集结果（状态/引擎/数据来源/逐项 HTTP 码）
 scripts/smoke.mjs           集成冒烟（隐藏窗口 + 截图，见 §5）
 scripts/dev-desktop.mjs     vite dev server + Electron 热更新联调
-tests/*.test.mjs            node --test，64 个用例
+tests/*.test.mjs            node --test，76 个用例
 ```
 
 ## 3. 关键设计决策（勿轻易推翻）
@@ -100,6 +100,9 @@ tests/*.test.mjs            node --test，64 个用例
      （`observe_one_finished_request`），长请求进行中差值为 0——“显示不出 tok/s”往往就是它；
      SGLang 要用每次迭代都累加的 `realtime_tokens_total{mode="decode"}`，
      并用 `gen_throughput` 兼顾刚起步/Prefill 阶段（策略集中在 `sampleGenerationRate()`）
+   - **SGLang 并发 gauge 有 prefill 盲区**（→ 见 §4.9）：`running`/`waiting` 都为 0 不等于空闲，
+     `deriveState({ active })` 的 `active` 由 `sampleActivity()` 给（prefill 计数 / decode 计数 / KV 占用
+     是否在增长，计数器优先、gauge 兜底）
    - 指标名是**精确匹配**（先切出名字再查表），所以 `*_total` / `*_by_reason` /
      `*_offline_batch` / `full_token_usage` 这类同前缀指标不会被误吞
 7. **读不到负载指标时不能断言"空闲"**：健康但无负载数据（SGLang 未开 `--enable-metrics`
@@ -135,6 +138,16 @@ tests/*.test.mjs            node --test，64 个用例
    `sglang:num_queue_reqs` / `sglang:token_usage`），而且**默认不暴露 `/metrics`**
    （要启动加 `--enable-metrics`，`enable_metrics` 默认为 `False`）。只认 `vllm:*` 会导致
    "明明在推理却显示空闲中"——这正是 `backend` 兜底与 `hint` 存在的原因。
+9. **SGLang 并发 gauge 有 prefill 盲区**（典型症状：长 prompt 的 prefill 阶段显示"空闲"）：
+   `num_running_reqs = len(scheduler.running_batch.reqs)`，而 `get_next_batch_to_run()` 里
+   `chunked_req_to_exclude.add(self.chunked_req)` 的注释写着 "Move the chunked request out of
+   the batch so that we can merge only finished requests to running_batch"——正在 prefill 的请求
+   被故意排除在 `running_batch` 之外，也不在 `waiting_queue`（它在 `self.chunked_req` 里）。
+   `/v1/loads` 的 `num_running_reqs` 同样是 `len(running_batch.reqs)`，同样中招。
+   所以 **`running + waiting == 0` 不能直接当空闲**，必须配合 `sampleActivity()` 的 `active`
+   （prefill 每次迭代都累加的 counter、decode 迭代计数、以及 KV 占用增长）。
+   注意 `decode_log_interval` 默认 40：并发 gauge 每 40 个 decode 迭代才刷新一次，
+   短短几十 token 的生成也可能整段看不到，这就是为什么 decode 计数也纳入活动信号。
 
 ## 5. 验证工作流（提交前必做）
 
@@ -171,6 +184,20 @@ node scripts/probe-load.mjs http://127.0.0.1:18101 auto     # → busy/loadSourc
 node scripts/probe-load.mjs http://127.0.0.1:18102 auto     # → busy/loadSource=loads（/metrics 404）
 node scripts/probe-load.mjs http://127.0.0.1:18102 vllm     # → idle/hint=未读到负载指标（不试兜底）
 node scripts/probe-load.mjs http://127.0.0.1:18103 auto     # → busy/backend=vllm（回归）
+pkill -f "mock-vllm.mjs --port 181"
+```
+
+**SGLang prefill 盲区专项验证**（改 `sampleActivity` / `deriveState` / 状态文案后必跑）：
+
+```bash
+# --prefill：并发 gauge 恒为 0（模拟 chunked prefill），prefill 计数与 KV 占用在涨
+node scripts/mock-vllm.mjs --port 18105 --backend sglang --prefill &
+node scripts/mock-vllm.mjs --port 18106 --backend sglang --no-metrics --prefill &
+node scripts/mock-vllm.mjs --port 18107 --backend sglang --running 0 --waiting 0 &
+sleep 1
+node scripts/probe-load.mjs http://127.0.0.1:18105 auto   # 第 2 次采样 → busy/prefillActive=true
+node scripts/probe-load.mjs http://127.0.0.1:18106 auto   # 同上，只是走 /v1/loads 兜底
+node scripts/probe-load.mjs http://127.0.0.1:18107 auto   # 真空闲 → 必须保持 idle（防误报）
 pkill -f "mock-vllm.mjs --port 181"
 ```
 

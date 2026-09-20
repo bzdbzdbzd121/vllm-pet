@@ -4,7 +4,7 @@
  *   MockStatusProvider — 浏览器预览：手动推送状态 + localStorage 模拟配置
  *   LiveFetchProvider  — 浏览器"真实直连"：直接 fetch vLLM（受 CORS 限制，仅调试用）
  */
-import { parsePrometheusMetrics, parseLoadsResponse, deriveState, sampleGenerationRate, DEFAULT_THRESHOLDS } from '../../shared/status-core.js'
+import { parsePrometheusMetrics, parseLoadsResponse, deriveState, sampleGenerationRate, sampleActivity, DEFAULT_THRESHOLDS } from '../../shared/status-core.js'
 
 export const DEFAULT_CONFIG = Object.freeze({
   apiBase: '',
@@ -122,6 +122,7 @@ export class LiveFetchProvider {
     this._stopped = true
     this._everConnected = false
     this._lastGenSample = null
+    this._lastActivity = null
   }
 
   start(onStatus) {
@@ -193,7 +194,12 @@ export class LiveFetchProvider {
 
     const wasConnected = this._everConnected
     if (healthOk) this._everConnected = true
-    const { state, intensity } = deriveState({ healthOk, metrics: load }, this.opts.thresholds)
+
+    // 活动采样：SGLang 的并发 gauge 看不到正在 prefill 的请求（见 status-core 注释）
+    const activity = sampleActivity(load, this._lastActivity)
+    this._lastActivity = activity.sample
+
+    const { state, intensity } = deriveState({ healthOk, metrics: load, active: activity.active }, this.opts.thresholds)
 
     // 生成吞吐：优先 SGLang 每次迭代累加的 counter，其次累计 counter 求差，最后用服务自报吞吐
     const { tokensPerSec, sample } = sampleGenerationRate(load, this._lastGenSample)
@@ -204,6 +210,7 @@ export class LiveFetchProvider {
       intensity,
       backend: load?.backend ?? null,
       loadSource,
+      prefillActive: activity.prefillActive,
       running: load?.running ?? 0,
       waiting: load?.waiting ?? 0,
       cacheUsage: load?.cacheUsage ?? null,

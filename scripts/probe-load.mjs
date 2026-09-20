@@ -55,6 +55,7 @@ const fmt = (s) => [
   `loadSource=${s.loadSource}`,
   `running=${s.running}`,
   `waiting=${s.waiting}`,
+  `prefillActive=${s.prefillActive}`,
   `cacheUsage=${s.cacheUsage == null ? '-' : s.cacheUsage}`,
   `tokensPerSec=${s.tokensPerSec == null ? '-' : Math.round(s.tokensPerSec)}`,
   `latencyMs=${s.latencyMs}`,
@@ -73,7 +74,11 @@ if (snap.loadSource === 'none') {
   console.log('[probe] 读不到负载数据：SGLang 需启动加 --enable-metrics（或 ≥0.5.8 的 /v1/loads）；')
   console.log('[probe] vLLM 请确认 /metrics 可访问且未被 --api-key 拦住。')
 }
-if (second.state === 'busy' && !(second.tokensPerSec > 0)) {
+if (second.state === 'busy' && !(second.tokensPerSec > 0) && !second.prefillActive) {
   console.log('[probe] 忙但 tok/s 为 0：SGLang 的 generation_tokens_total 只在请求结束时累加，')
   console.log('[probe] 应有 sglang:realtime_tokens_total{mode="decode"} 或 sglang:gen_throughput 兜底（见上方分项探测）。')
+}
+if (second.prefillActive) {
+  console.log('[probe] prefillActive=true：正在 prefill（SGLang 此时并发 gauge 为 0，属正常），')
+  console.log('[probe] 桌宠会显示"预填充中"而不是"空闲中"。')
 }

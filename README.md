@@ -45,6 +45,13 @@
 > 降级为"存活检测"（在线=空闲，掉线=离线），状态文本会显示 `空闲中（未读到负载指标）` 提醒你。
 > vLLM 侧始终有 `/metrics`，老版本没有该接口时才降级。
 >
+> **SGLang 的并发 gauge 看不到正在 prefill 的请求**：`num_running_reqs` 只统计 `running_batch`
+> （已在解码的请求），正在 prefill（含 chunked prefill）的请求被 SGLang 有意排除在外，
+> 也不在 `waiting_queue` 里 —— 长 prompt 的 prefill 阶段两个数都是 0。
+> 桌宠靠 `realtime_tokens_total{mode="prefill_*"}`（每次 prefill 迭代都累加）/ decode 计数 /
+> KV 占用的**增长**把它认出来，显示 `预填充中` 而不是 `空闲中`；未开 `--enable-metrics`
+> （走 `/v1/loads`）时只能判断"在推理"，显示 `推理中`。
+>
 > **tok/s 为什么不用 `sglang:generation_tokens_total`？** 它在 SGLang 里只在**请求结束时**才累加
 > （`observe_one_finished_request`），长请求进行中差值恒为 0，算出来一直没有速率；
 > 所以优先用每次迭代都累加的 `realtime_tokens_total{mode="decode"}`，并用服务自报的
@@ -54,9 +61,10 @@
 | --- | --- | --- |
 | 健康检查失败 | 🔌 离线 | 变灰、感叹号气泡、慢速摆动 |
 | 启动初期 / 重连中 | 📡 连接中 | 天线快速扫描 |
-| running + waiting = 0 | 😌 空闲 | 呼吸、眨眼、偶尔晃脑 |
+| running + waiting = 0 且无活动信号 | 😌 空闲 | 呼吸、眨眼、偶尔晃脑 |
 | 空闲持续 10 分钟 | 💤 睡觉 | 闭眼、Zzz 飘出 |
 | ≥ 1（轻载阈值） | 💨 推理中·轻 | 天线脉冲加速、胸口灯闪烁 |
+| SGLang 正在 prefill（并发读不到） | 💨 推理中·轻 | 状态文本显示 `预填充中` |
 | ≥ 4（中载阈值） | 💦 推理中·中 | 专注眼神、汗滴、蒸汽、手臂摆动 |
 | ≥ 16 或 KV cache ≥ 85%（重载阈值） | 🔥 推理中·重 | 极速摆动+抖动、蒸汽喷射、速度线、脸屏闪烁 |
 | 忙碌 → 空闲的瞬时 | 🎉 庆祝 | 开心弯眼弹跳 + 闪光（一次性） |
@@ -226,6 +234,8 @@ node scripts/probe-load.mjs http://127.0.0.1:8000  vllm     # vLLM 默认端口
   SGLang 默认不暴露 `/metrics`，用 `--enable-metrics` 重启即恢复正常；不想重启的话
   升到 SGLang ≥ 0.5.8 也能自动走 `/v1/loads` 兜底。先用
   `node scripts/probe-load.mjs <你的服务地址>` 看是哪个接口没通。
+- **看到状态文本"预填充中"？** 服务正在处理提示词（prefill），并发数显示不出来是因为
+  SGLang 不把正在 prefill 的请求计入 `running_batch`（见"状态映射规则"里的说明）；这是正常的，不是错报。
 - **预览页"直连真实服务"失败？** 浏览器跨源受 vLLM 服务的 CORS 限制，属正常现象；
   桌面版在主进程轮询，不受此限制。
 - **开了"鼠标穿透"点不到宠物了？** 右键托盘图标 → 取消勾选"鼠标穿透"。

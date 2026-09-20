@@ -116,3 +116,21 @@ test('formatStatusLine：读不到负载指标时，空闲文案带提示（SGLa
   // 有 hint 但非空闲态时不拼接（离线/连接中文案已各自说明原因）
   assert.ok(!formatStatusLine(snap({ state: 'busy', running: 3, hint: '未读到负载指标' })).includes('未读到'))
 })
+
+test('formatStatusLine：prefill 阶段（并发读不到）显示"预填充中"，不再出现"推理中 ×0"', () => {
+  // SGLang 正在 prefill 时 running_batch 为空 → running=0，但确实在推理
+  assert.equal(
+    formatStatusLine(snap({ state: 'busy', intensity: 1, running: 0, prefillActive: true, cacheUsage: 0.3 })),
+    '预填充中 · KV\u00a030%'
+  )
+  // 有并发数字时照旧显示 ×N（prefill 与 decode 混合时）
+  assert.equal(
+    formatStatusLine(snap({ state: 'busy', intensity: 1, running: 3, prefillActive: true })),
+    '推理中\u00a0×3'
+  )
+  // 只有"有活动"但判不出是 prefill（未开 metrics 走 /v1/loads 时）→ 显示"推理中"，不谎报 prefill
+  assert.equal(
+    formatStatusLine(snap({ state: 'busy', intensity: 1, running: 0, waiting: 2, prefillActive: false })),
+    '推理中 · 队列\u00a02'
+  )
+})

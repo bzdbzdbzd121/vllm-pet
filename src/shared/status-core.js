@@ -16,10 +16,22 @@
  *     sglang:num_queue_reqs        — 等待队列请求数（gauge）
  *     sglang:token_usage           — token 池（KV cache）使用率 0~1（gauge）
  *     sglang:realtime_tokens_total — 每次迭代（iteration）累加的 token，带 mode 标签：
- *                                    decode 是生成 token（实时 tok/s 靠它）
+ *                                    decode 是生成 token（实时 tok/s 靠它）；
+ *                                    prefill_compute / prefill_cache 是 prefill 进度
+ *     sglang:num_used_tokens       — KV 池已占用 token 数（绝对值，增长说明在装 token）
  *     sglang:generation_tokens_total — ⚠️ 只在**请求结束时**才累加（observe_one_finished_request），
  *                                    长请求进行中差值恒为 0，不能用来算实时吞吐
  *     sglang:gen_throughput        — 服务自报生成吞吐 tok/s（gauge，counter 算不出时兜底）
+ *
+ * ⚠️ SGLang 的并发 gauge 看不到正在 prefill 的请求：
+ *   `num_running_reqs` = len(scheduler.running_batch.reqs)，而正在 prefill（含 chunked prefill）
+ *   的请求被有意排除在 running_batch 之外（scheduler.get_next_batch_to_run() 里
+ *   `chunked_req_to_exclude.add(self.chunked_req)` 注释："Move the chunked request out of
+ *   the batch so that we can merge only finished requests to running_batch"），
+ *   也不在 waiting_queue（它存在 self.chunked_req / last_batch 里）——
+ *   于是长 prompt 的 prefill 阶段 running=waiting=0，只看这两个 gauge 会误判为"空闲"。
+ *   `/v1/loads` 的 num_running_reqs 同样是 len(running_batch.reqs)，同样有盲区。
+ *   因此靠 sampleActivity() 的"在增长"信号把这段时间认出来。
  *
  * 同名指标带多个 label（多 DP/TP rank、多 model、is_streaming…）时求和成总量；
  * 唯独 SGLang 的 priority 维度是"总量行 + 分档行"两层结构（priority="" 为总量，
@@ -53,13 +65,15 @@ const METRIC_SPECS = new Map([
   ['vllm:generation_tokens_total', { field: 'genTokensTotal', kind: 'counter', backend: 'vllm' }],
   ['sglang:num_running_reqs', { field: 'running', kind: 'sum', backend: 'sglang' }],
   ['sglang:num_queue_reqs', { field: 'waiting', kind: 'sum', backend: 'sglang' }],
+  ['sglang:num_used_tokens', { field: 'usedTokensTotal', kind: 'sum', backend: 'sglang' }],
   ['sglang:token_usage', { field: 'cacheUsage', kind: 'max', backend: 'sglang' }],
   ['sglang:prompt_tokens_total', { field: 'promptTokensTotal', kind: 'counter', backend: 'sglang' }],
   ['sglang:generation_tokens_total', { field: 'genTokensTotal', kind: 'counter', backend: 'sglang' }],
   ['sglang:gen_throughput', { field: 'genThroughput', kind: 'sum', backend: 'sglang' }],
-  // 只有 decode 模式是"输出 token"；prefill_compute/prefill_cache 不计入
+  // 只有 decode 模式是"输出 token"；prefill_compute/prefill_cache 合到同一个字段，
+  // 它们是 prefill 进度信号（sampleActivity 靠它识别 prefill 阶段的"隐形"请求）
   ['sglang:realtime_tokens_total', {
-    modes: { decode: 'realtimeGenTokensTotal' },
+    modes: { decode: 'realtimeGenTokensTotal', prefill_compute: 'prefillTokensTotal', prefill_cache: 'prefillTokensTotal' },
     kind: 'counter',
     backend: 'sglang'
   }]
@@ -76,6 +90,8 @@ function emptyLoad() {
     promptTokensTotal: null,
     genTokensTotal: null,
     realtimeGenTokensTotal: null, // SGLang 每次迭代累加的 decode token（实时吞吐用）
+    prefillTokensTotal: null, // SGLang 每次迭代累加的 prefill token（prefill 活动信号）
+    usedTokensTotal: null, // KV 池已占用 token 数（无 counter 时的活动信号）
     genThroughput: null
   }
 }
@@ -86,6 +102,7 @@ function emptyLoad() {
  * @returns {{ backend: 'vllm'|'sglang'|null, hasConcurrency: boolean, running: number,
  *             waiting: number, cacheUsage: number|null, promptTokensTotal: number|null,
  *             genTokensTotal: number|null, realtimeGenTokensTotal: number|null,
+ *             prefillTokensTotal: number|null, usedTokensTotal: number|null,
  *             genThroughput: number|null }}
  */
 export function parsePrometheusMetrics(text) {
@@ -148,6 +165,7 @@ export function parseLoadsResponse(data) {
   let waiting = 0
   let cacheUsage = null
   let genThroughput = null
+  let usedTokensTotal = null
   for (const item of loads) {
     if (!item || typeof item !== 'object') continue
     const waitingReqs = toNumber(item.num_waiting_reqs)
@@ -161,8 +179,18 @@ export function parseLoadsResponse(data) {
       cacheUsage = cacheUsage === null ? toNumber(item.token_usage) : Math.max(cacheUsage, toNumber(item.token_usage))
     }
     if (item.gen_throughput != null) genThroughput = (genThroughput ?? 0) + toNumber(item.gen_throughput)
+    if (item.num_used_tokens != null) usedTokensTotal = (usedTokensTotal ?? 0) + toNumber(item.num_used_tokens)
   }
-  return { ...emptyLoad(), backend: 'sglang', hasConcurrency: true, running, waiting, cacheUsage, genThroughput }
+  return {
+    ...emptyLoad(),
+    backend: 'sglang',
+    hasConcurrency: true,
+    running,
+    waiting,
+    cacheUsage,
+    genThroughput,
+    usedTokensTotal
+  }
 }
 
 /**
@@ -208,6 +236,43 @@ export function sampleGenerationRate(load, prev = null, at = Date.now()) {
   let tokensPerSec = rate
   if (!(tokensPerSec > 0) && gauge != null) tokensPerSec = gauge
   return { tokensPerSec, sample: { value: counter.value, at, source: counter.source } }
+}
+
+/**
+ * 活动采样：识别"gauge 看不到、但确实在干活"的时段（主要是 SGLang 的 prefill 阶段）。
+ *
+ * 用"在增长"而不是"大于 0"：counter/gauge 只要两次采样间变大，就说明服务在这段时间里
+ * 真的推进了工作；都平了就说明真的闲下来了。
+ *
+ * 优先级（都可用时任一为真即 active）：
+ *   1. prefillTokensTotal（realtime_tokens_total 的 prefill_* 模式）——每次 prefill 迭代都累加，
+ *      专治 chunked prefill 期间 running=waiting=0 的盲区
+ *   2. realtimeGenTokensTotal（decode 模式）——SGLang 的并发 gauge 默认每 decode_log_interval
+ *      （默认 40）个迭代才刷新一次，短短几十 token 的生成可能整段都看不到，靠它补上
+ *   3. usedTokensTotal（KV 池占用）——没有 counter 时（未开 --enable-metrics 走 /v1/loads）
+ *      唯一可用信号；不做为主信号是因为它是 gauge，多 rank label 集合变化也会跳变
+ *
+ * @param {object|null} load 本次负载
+ * @param {{ prefillTokens: number|null, decodeTokens: number|null, usedTokens: number|null, at: number }|null} prev 上次采样
+ * @param {number} [at] 本次采样时间戳（毫秒）
+ * @returns {{ active: boolean, prefillActive: boolean,
+ *             sample: { prefillTokens: number|null, decodeTokens: number|null, usedTokens: number|null, at: number } }}
+ */
+export function sampleActivity(load, prev = null, at = Date.now()) {
+  const prefillTokens = load?.prefillTokensTotal ?? null
+  const decodeTokens = load?.realtimeGenTokensTotal ?? null
+  const usedTokens = load?.usedTokensTotal ?? null
+  const sample = { prefillTokens, decodeTokens, usedTokens, at }
+  const usable = prev && at > prev.at
+  const grew = (curr, before) => curr != null && before != null && curr > before
+  if (!usable) return { active: false, prefillActive: false, sample }
+
+  const prefillActive = grew(prefillTokens, prev.prefillTokens)
+  const hasCounters = prefillTokens != null || decodeTokens != null
+  const active = hasCounters
+    ? prefillActive || grew(decodeTokens, prev.decodeTokens)
+    : grew(usedTokens, prev.usedTokens)
+  return { active, prefillActive, sample }
 }
 
 /**
@@ -263,11 +328,11 @@ function toNumber(v) {
 
 /**
  * 由健康检查 + 负载指标推导桌宠状态。
- * @param {{ healthOk: boolean, metrics: object|null, prevState?: string }} input
+ * @param {{ healthOk: boolean, metrics: object|null, active?: boolean, prevState?: string }} input
  * @param {Partial<typeof DEFAULT_THRESHOLDS>} [thresholds]
  * @returns {{ state: 'offline'|'idle'|'busy', intensity: 0|1|2|3 }}
  */
-export function deriveState({ healthOk, metrics } = {}, thresholds) {
+export function deriveState({ healthOk, metrics, active } = {}, thresholds) {
   const t = { ...DEFAULT_THRESHOLDS, ...(thresholds || {}) }
   if (!healthOk) return { state: 'offline', intensity: 0 }
   if (!metrics) return { state: 'idle', intensity: 0 } // 老版本无 /metrics：降级为仅存活检测
@@ -279,5 +344,7 @@ export function deriveState({ healthOk, metrics } = {}, thresholds) {
   }
   if (total >= t.medium) return { state: 'busy', intensity: 2 }
   if (total >= t.light) return { state: 'busy', intensity: 1 }
+  // 并发 gauge 读不到但服务在推进（典型：SGLang 的 prefill 阶段）——至少轻载，别误报"空闲"
+  if (active) return { state: 'busy', intensity: 1 }
   return { state: 'idle', intensity: 0 }
 }

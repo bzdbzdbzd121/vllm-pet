@@ -67,19 +67,21 @@ function pollConfig(base, patch = {}) {
   }
 }
 
-const sglangLoads = (running, waiting, cache, throughput) => (_req, res) => {
+const sglangLoads = (running, waiting, cache, throughput, usedTokens = null) => (_req, res) => {
+  const core = { dp_rank: 0, num_running_reqs: running, num_waiting_reqs: waiting, token_usage: cache, gen_throughput: throughput }
+  if (usedTokens != null) core.num_used_tokens = usedTokens
   res.writeHead(200, { 'content-type': 'application/json' })
   res.end(JSON.stringify({
     timestamp: new Date().toISOString(),
     version: '0.5.20',
     dp_rank_count: 1,
-    loads: [{ dp_rank: 0, num_running_reqs: running, num_waiting_reqs: waiting, token_usage: cache, gen_throughput: throughput }],
+    loads: [core],
     aggregate: { total_running_reqs: running, total_waiting_reqs: waiting, avg_token_usage: cache }
   }))
 }
 
 /** 真实 SGLang /metrics 形状：gen_throughput + 只在请求结束累加的累计 counter + 每次迭代累加的 realtime counter */
-const sglangMetrics = ({ running, waiting, cache, genTotal, realtimeGenTotal }) => (_req, res) => {
+const sglangMetrics = ({ running, waiting, cache, genTotal, realtimeGenTotal, prefillTokens, usedTokens }) => (_req, res) => {
   const label = 'model_name="mock",tp_rank="0",pp_rank="0",moe_ep_rank="0"'
   const lines = [
     `sglang:num_running_reqs{${label}} ${running}.0`,
@@ -92,7 +94,12 @@ const sglangMetrics = ({ running, waiting, cache, genTotal, realtimeGenTotal }) 
   // realtime counter 是 v0.5.x 才有；老版本（或模拟缺失）不吐这行
   if (realtimeGenTotal != null) {
     lines.push(`sglang:realtime_tokens_total{${label},mode="decode"} ${realtimeGenTotal}.0`)
-    lines.push(`sglang:realtime_tokens_total{${label},mode="prefill_compute"} 999.0`)
+  }
+  if (prefillTokens != null) {
+    lines.push(`sglang:realtime_tokens_total{${label},mode="prefill_compute"} ${prefillTokens}.0`)
+  }
+  if (usedTokens != null) {
+    lines.push(`sglang:num_used_tokens{${label}} ${usedTokens}.0`)
   }
   res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' })
   res.end(lines.join('\n') + '\n')
@@ -238,6 +245,75 @@ test('poller: vLLM 指标链路不受影响（含新版 kv_cache_usage_perc）',
     assert.equal(snap.state, 'busy')
     assert.equal(snap.intensity, 3) // KV 0.91 ≥ 0.85 → 重载
     assert.equal(fake.hits['/v1/loads'], undefined)
+  } finally {
+    await fake.close()
+  }
+})
+
+test('poller: SGLang prefill 阶段（并发 gauge 恒为 0）不再显示"空闲中"', async () => {
+  // 真实机制：正在 prefill 的请求被排除在 running_batch 之外（也不在 waiting_queue），
+  // 两个 gauge 都是 0；只有 realtime_tokens_total{mode="prefill_*"} 在涨
+  let prefillTokens = 1000
+  const fake = await startFakeServer({
+    '/health': (_req, res) => res.writeHead(200).end('ok'),
+    '/metrics': (req, res) => sglangMetrics({
+      running: 0, waiting: 0, cache: 0.3, genTotal: 700, prefillTokens
+    })(req, res)
+  })
+  try {
+    const poller = new PollerService({ getConfig: () => ({}), onStatus: () => {} })
+    const cfg = pollConfig(fake.base)
+    const first = await poller._poll(cfg)
+    assert.equal(first.state, 'idle') // 首个样本没有对比基线，只能按 gauge 判
+    assert.equal(first.running, 0)
+    prefillTokens += 4200 // prefill 推进了一次 chunk
+    const second = await poller._poll(cfg)
+    assert.equal(second.state, 'busy') // ← 修复点：以前这里是 idle
+    assert.equal(second.intensity, 1)
+    assert.equal(second.prefillActive, true)
+    assert.equal(second.running, 0)
+    // prefill 结束、计数停住 → 回到空闲
+    const third = await poller._poll(cfg)
+    assert.equal(third.state, 'idle')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('poller: 未开 metrics（/v1/loads 路径）时靠 KV 占用增长识别 prefill', async () => {
+  let usedTokens = 4000
+  const fake = await startFakeServer({
+    '/health': (_req, res) => res.writeHead(200).end('ok'),
+    '/v1/loads': (req, res) => sglangLoads(0, 0, 0.3, 0, usedTokens)(req, res)
+  })
+  try {
+    const poller = new PollerService({ getConfig: () => ({}), onStatus: () => {} })
+    const cfg = pollConfig(fake.base)
+    assert.equal((await poller._poll(cfg)).state, 'idle')
+    usedTokens += 20000 // prefill 往 KV 池里装 token
+    const snap = await poller._poll(cfg)
+    assert.equal(snap.state, 'busy') // ← 修复点
+    assert.equal(snap.running, 0)
+    assert.equal(snap.loadSource, 'loads')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('poller: 真空闲不能被误判成忙碌（计数/gauge 全持平）', async () => {
+  const fake = await startFakeServer({
+    '/health': (_req, res) => res.writeHead(200).end('ok'),
+    '/metrics': (req, res) => sglangMetrics({
+      running: 0, waiting: 0, cache: 0.2, genTotal: 700, realtimeGenTotal: 500, prefillTokens: 900, usedTokens: 3000
+    })(req, res)
+  })
+  try {
+    const poller = new PollerService({ getConfig: () => ({}), onStatus: () => {} })
+    const cfg = pollConfig(fake.base)
+    await poller._poll(cfg)
+    const snap = await poller._poll(cfg)
+    assert.equal(snap.state, 'idle')
+    assert.equal(snap.prefillActive, false)
   } finally {
     await fake.close()
   }
