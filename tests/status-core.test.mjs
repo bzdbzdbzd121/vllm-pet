@@ -5,6 +5,7 @@ import {
   parseLoadsResponse,
   deriveState,
   tokenRate,
+  sampleGenerationRate,
   DEFAULT_THRESHOLDS
 } from '../src/shared/status-core.js'
 
@@ -37,6 +38,11 @@ sglang:prompt_tokens_total{model_name="qwen3",engine_type="unified",tp_rank="0",
 # HELP sglang:generation_tokens_total Number of generation tokens processed.
 # TYPE sglang:generation_tokens_total counter
 sglang:generation_tokens_total{model_name="qwen3",engine_type="unified",tp_rank="0",pp_rank="0",moe_ep_rank="0",is_streaming="true"} 7.557572e+06
+# HELP sglang:realtime_tokens_total The realtime number of tokens processed.
+# TYPE sglang:realtime_tokens_total counter
+sglang:realtime_tokens_total{model_name="qwen3",engine_type="unified",tp_rank="0",pp_rank="0",moe_ep_rank="0",mode="prefill_compute"} 8128902.0
+sglang:realtime_tokens_total{model_name="qwen3",engine_type="unified",tp_rank="0",pp_rank="0",moe_ep_rank="0",mode="prefill_cache"} 0.0
+sglang:realtime_tokens_total{model_name="qwen3",engine_type="unified",tp_rank="0",pp_rank="0",moe_ep_rank="0",mode="decode"} 7557572.0
 `
 
 const EMPTY = {
@@ -47,6 +53,7 @@ const EMPTY = {
   cacheUsage: null,
   promptTokensTotal: null,
   genTokensTotal: null,
+  realtimeGenTokensTotal: null,
   genThroughput: null
 }
 
@@ -264,4 +271,72 @@ test('parsePrometheusMetrics: 兼容 CRLF 换行与行首缩进', () => {
   const m = parsePrometheusMetrics(text)
   assert.equal(m.running, 4)
   assert.equal(m.waiting, 1)
+})
+
+test('parsePrometheusMetrics: SGLang realtime_tokens_total 只取 mode="decode" 作输出 token', () => {
+  const m = parsePrometheusMetrics(SGLANG_SAMPLE)
+  assert.equal(m.realtimeGenTokensTotal, 7_557_572) // prefill_compute / prefill_cache 不计入
+  assert.equal(m.genTokensTotal, 7_557_572) // 累计 counter 照旧
+})
+
+test('parsePrometheusMetrics: 多 DP rank 的 realtime decode counter 求和', () => {
+  const text = [
+    'sglang:realtime_tokens_total{model_name="a",dp_rank="0",mode="decode"} 100.0',
+    'sglang:realtime_tokens_total{model_name="a",dp_rank="1",mode="decode"} 250.0',
+    'sglang:realtime_tokens_total{model_name="a",dp_rank="0",mode="prefill_compute"} 900.0'
+  ].join('\n')
+  assert.equal(parsePrometheusMetrics(text).realtimeGenTokensTotal, 350)
+})
+
+test('sampleGenerationRate: 优先 realtime（每次迭代累加）counter，不等请求结束', () => {
+  const at = 10_000
+  const load = { realtimeGenTokensTotal: 5000, genTokensTotal: 999, genThroughput: 42 }
+  const first = sampleGenerationRate(load, null, at)
+  assert.deepEqual(first, { tokensPerSec: 42, sample: { value: 5000, at, source: 'realtime' } }) // 首样本算不出 → 自报吞吐兜底
+  const second = sampleGenerationRate({ ...load, realtimeGenTokensTotal: 5400 }, first.sample, at + 2000)
+  assert.equal(second.tokensPerSec, 200) // 2s 内 400 token
+  assert.equal(second.sample.source, 'realtime')
+})
+
+test('sampleGenerationRate: 只有累计 counter（vLLM）时按差值算，差值 0 则不出数', () => {
+  const load = { genTokensTotal: 1000, genThroughput: null }
+  const first = sampleGenerationRate(load, null, 1000)
+  assert.equal(first.tokensPerSec, null) // 首样本
+  assert.equal(first.sample.source, 'total')
+  const second = sampleGenerationRate({ genTokensTotal: 1420 }, first.sample, 6000)
+  assert.equal(second.tokensPerSec, 84)
+  const flat = sampleGenerationRate({ genTokensTotal: 1420 }, second.sample, 8000)
+  assert.equal(flat.tokensPerSec, 0)
+})
+
+test('sampleGenerationRate: SGLang 累计 counter 停在请求结束才跳时，退回自报吞吐', () => {
+  // 复现"显示不出输出 token 速率"：generation_tokens_total 在请求进行中不增长
+  const load = { genTokensTotal: 700, realtimeGenTokensTotal: null, genThroughput: 294 }
+  const first = sampleGenerationRate(load, null, 1000)
+  assert.equal(first.tokensPerSec, 294)
+  const second = sampleGenerationRate(load, first.sample, 3000)
+  assert.equal(second.tokensPerSec, 294) // 差值为 0 → 用 gen_throughput
+})
+
+test('sampleGenerationRate: counter 源切换/服务重启（差值为负）时不吐垃圾值', () => {
+  const first = sampleGenerationRate({ genTokensTotal: 5000 }, null, 1000)
+  // 出现 realtime counter（源切换）→ 丢弃旧样本，用自报吞吐
+  const switched = sampleGenerationRate({ realtimeGenTokensTotal: 10, genTokensTotal: 5000, genThroughput: 88 }, first.sample, 3000)
+  assert.equal(switched.tokensPerSec, 88)
+  assert.equal(switched.sample.source, 'realtime')
+  // 服务重启：counter 清零 → 差值为负 → tokenRate 返回 null
+  const restarted = sampleGenerationRate({ realtimeGenTokensTotal: 3, genThroughput: null }, switched.sample, 5000)
+  assert.equal(restarted.tokensPerSec, null)
+})
+
+test('sampleGenerationRate: 无任何数据时返回 null，不误报 0', () => {
+  assert.deepEqual(sampleGenerationRate(null, null, 0), { tokensPerSec: null, sample: null })
+  assert.deepEqual(sampleGenerationRate({}, null, 0), { tokensPerSec: null, sample: null })
+})
+
+test('parseLoadsResponse: /v1/loads 无 counter，tok/s 由 gen_throughput 兜底', () => {
+  const load = parseLoadsResponse({ loads: [{ num_running_reqs: 2, num_waiting_reqs: 0, gen_throughput: 126.5 }] })
+  const { tokensPerSec, sample } = sampleGenerationRate(load, null, 0)
+  assert.equal(tokensPerSec, 126.5)
+  assert.equal(sample, null)
 })

@@ -51,19 +51,40 @@ function current() {
   return CYCLE ? PHASES[phaseIndex] : { name: 'fixed', ...fixed }
 }
 
-// token counters：按请求速率随时间累计，供桌宠计算 tok/s（每并发约 42 tok/s 生成）
+// token counters——两组语义要区分（真实 SGLang 就是这样）：
+//   realtime_tokens_total{mode=decode}：每次 decode 迭代都累加 → 桌宠用它算实时 tok/s
+//   generation_tokens_total：SGLang 只在"请求结束"时结算 → 长请求进行中保持不变
+//                            （vLLM 是每步累加，所以 vLLM 模式这两个 counter 同步增长）
 const GEN_PER_REQ = 42
 const PROMPT_PER_REQ = 9
+const SETTLE_MS = 3000 // 模拟平均 3s 完成一批请求并结算累计 counter
+let realtimeGenTotal = 900000
+let realtimePrefillTotal = 260000
 let genTotal = 120000
 let promptTotal = 38000
+let unsettledGen = 0
+let unsettledPrompt = 0
 let lastAdvance = Date.now()
+let lastSettle = Date.now()
 function advanceTokens(running) {
   const now = Date.now()
   const dt = (now - lastAdvance) / 1000
   lastAdvance = now
-  if (dt > 0 && running > 0) {
-    genTotal += Math.round(running * GEN_PER_REQ * dt)
-    promptTotal += Math.round(running * PROMPT_PER_REQ * dt)
+  if (!(dt > 0) || running <= 0) return
+  const gen = Math.round(running * GEN_PER_REQ * dt)
+  const prompt = Math.round(running * PROMPT_PER_REQ * dt)
+  realtimeGenTotal += gen
+  realtimePrefillTotal += prompt
+  unsettledGen += gen
+  unsettledPrompt += prompt
+  // vLLM 每步都累加 generation_tokens_total；SGLang 只在请求结束时结算（这里用 SETTLE_MS 模拟）
+  const shouldSettle = BACKEND !== 'sglang' || now - lastSettle >= SETTLE_MS
+  if (shouldSettle) {
+    genTotal += unsettledGen
+    promptTotal += unsettledPrompt
+    unsettledGen = 0
+    unsettledPrompt = 0
+    lastSettle = now
   }
 }
 
@@ -106,6 +127,11 @@ function sglangMetrics({ running, waiting, cache }) {
     '# HELP sglang:gen_throughput The generation throughput (token/s).',
     '# TYPE sglang:gen_throughput gauge',
     `sglang:gen_throughput${SGLANG_LABELS} ${running * GEN_PER_REQ}`,
+    '# HELP sglang:realtime_tokens_total The realtime number of tokens processed (per iteration).',
+    '# TYPE sglang:realtime_tokens_total counter',
+    `sglang:realtime_tokens_total${SGLANG_LABELS.replace('}', ',mode="prefill_compute"}')} ${realtimePrefillTotal}`,
+    `sglang:realtime_tokens_total${SGLANG_LABELS.replace('}', ',mode="prefill_cache"}')} 0`,
+    `sglang:realtime_tokens_total${SGLANG_LABELS.replace('}', ',mode="decode"}')} ${realtimeGenTotal}`,
     '# HELP sglang:prompt_tokens_total Number of prefill tokens processed.',
     '# TYPE sglang:prompt_tokens_total counter',
     `sglang:prompt_tokens_total${SGLANG_LABELS.replace('}', ',is_streaming="true"}')} ${promptTotal}.0`,
@@ -166,6 +192,7 @@ const server = http.createServer((req, res) => {
       res.writeHead(404).end('not found')
       return
     }
+    advanceTokens(running)
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(loadsBody({ running, waiting, cache }))
   } else {

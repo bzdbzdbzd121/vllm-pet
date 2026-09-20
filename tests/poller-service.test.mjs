@@ -78,18 +78,24 @@ const sglangLoads = (running, waiting, cache, throughput) => (_req, res) => {
   }))
 }
 
-const sglangMetrics = (running, waiting, cache, genTotal) => (_req, res) => {
+/** 真实 SGLang /metrics 形状：gen_throughput + 只在请求结束累加的累计 counter + 每次迭代累加的 realtime counter */
+const sglangMetrics = ({ running, waiting, cache, genTotal, realtimeGenTotal }) => (_req, res) => {
   const label = 'model_name="mock",tp_rank="0",pp_rank="0",moe_ep_rank="0"'
-  res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' })
-  res.end([
+  const lines = [
     `sglang:num_running_reqs{${label}} ${running}.0`,
     `sglang:num_queue_reqs{${label}} ${waiting}.0`,
     `sglang:token_usage{${label}} ${cache}`,
     `sglang:gen_throughput{${label}} 7.0`,
     `sglang:prompt_tokens_total{${label},is_streaming="true"} 500.0`,
-    `sglang:generation_tokens_total{${label},is_streaming="true"} ${genTotal}.0`,
-    ''
-  ].join('\n'))
+    `sglang:generation_tokens_total{${label},is_streaming="true"} ${genTotal}.0`
+  ]
+  // realtime counter 是 v0.5.x 才有；老版本（或模拟缺失）不吐这行
+  if (realtimeGenTotal != null) {
+    lines.push(`sglang:realtime_tokens_total{${label},mode="decode"} ${realtimeGenTotal}.0`)
+    lines.push(`sglang:realtime_tokens_total{${label},mode="prefill_compute"} 999.0`)
+  }
+  res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' })
+  res.end(lines.join('\n') + '\n')
 }
 
 test('poller: SGLang 未开 --enable-metrics 时回退 /v1/loads，不再误报"空闲中"', async () => {
@@ -131,11 +137,11 @@ test('poller: 指定 vllm 模式时不去试探 /v1/loads，降级为仅存活�
   }
 })
 
-test('poller: 读到 sglang:* 指标时不走兜底，tok/s 由 counter 差值算出', async () => {
-  let genTotal = 1000
+test('poller: 读到 sglang:* 指标时不走兜底，tok/s 由 realtime counter 差值算出', async () => {
+  let realtimeGenTotal = 1000
   const fake = await startFakeServer({
     '/health': (_req, res) => res.writeHead(200).end('ok'),
-    '/metrics': (req, res) => sglangMetrics(9, 3, 0.42, genTotal)(req, res),
+    '/metrics': (req, res) => sglangMetrics({ running: 9, waiting: 3, cache: 0.42, genTotal: 1000, realtimeGenTotal })(req, res),
     '/v1/loads': sglangLoads(9, 3, 0.42, 7)
   })
   try {
@@ -145,11 +151,48 @@ test('poller: 读到 sglang:* 指标时不走兜底，tok/s 由 counter 差值�
     assert.equal(first.loadSource, 'metrics')
     assert.equal(first.backend, 'sglang')
     assert.equal(first.state, 'busy')
-    assert.equal(first.tokensPerSec, null) // 首个采样算不出速率
-    genTotal += 420
+    assert.equal(first.tokensPerSec, 7) // 首样本算不出差值 → 退到 gen_throughput
+    realtimeGenTotal += 420
     const second = await poller._poll(cfg)
-    assert.ok(second.tokensPerSec > 1000, `应由 counter 差值算出（远大于 gen_throughput=7），实际 ${second.tokensPerSec}`)
+    assert.ok(second.tokensPerSec > 1000, `应由 realtime counter 差值算出（远大于 gen_throughput=7），实际 ${second.tokensPerSec}`)
     assert.equal(fake.hits['/v1/loads'], undefined)
+  } finally {
+    await fake.close()
+  }
+})
+
+test('poller: SGLang 累计 counter 停在请求结束才跳，长请求中也能显示实时 tok/s', async () => {
+  // 复现线上现象：generation_tokens_total 在请求进行中恒定不变（只在请求结束时结算），
+  // 只拿它求差 → tok/s 一直是 0 → 状态文本里什么都看不到
+  let realtimeGenTotal = 5000
+  const fake = await startFakeServer({
+    '/health': (_req, res) => res.writeHead(200).end('ok'),
+    '/metrics': (req, res) => sglangMetrics({ running: 6, waiting: 0, cache: 0.3, genTotal: 700, realtimeGenTotal })(req, res)
+  })
+  try {
+    const poller = new PollerService({ getConfig: () => ({}), onStatus: () => {} })
+    const cfg = pollConfig(fake.base)
+    await poller._poll(cfg)
+    realtimeGenTotal += 300 // genTotal 一动不动（请求还没结束）
+    const snap = await poller._poll(cfg)
+    assert.ok(snap.tokensPerSec > 0, `应算出正速率，实际 ${snap.tokensPerSec}`)
+    assert.equal(snap.state, 'busy')
+  } finally {
+    await fake.close()
+  }
+})
+
+test('poller: 老版本 SGLang 没有 realtime counter 时退回 gen_throughput（不再显示 0）', async () => {
+  const fake = await startFakeServer({
+    '/health': (_req, res) => res.writeHead(200).end('ok'),
+    '/metrics': (req, res) => sglangMetrics({ running: 4, waiting: 1, cache: 0.5, genTotal: 700 })(req, res)
+  })
+  try {
+    const poller = new PollerService({ getConfig: () => ({}), onStatus: () => {} })
+    const cfg = pollConfig(fake.base)
+    await poller._poll(cfg)
+    const snap = await poller._poll(cfg) // 累计 counter 差值为 0
+    assert.equal(snap.tokensPerSec, 7) // gen_throughput 兜底
   } finally {
     await fake.close()
   }

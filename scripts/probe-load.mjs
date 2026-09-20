@@ -44,6 +44,8 @@ async function peek(path) {
 }
 
 const snap = await poller._poll(config)
+// 两次采样相隔 1.2s：counter 差值算出的 tok/s 才有意义（紧贴着采会得到 0 或夸张值）
+await new Promise((resolve) => setTimeout(resolve, 1200))
 const second = await poller._poll(config)
 
 const fmt = (s) => [
@@ -61,7 +63,7 @@ const fmt = (s) => [
 ].join('  ')
 
 console.log(`[probe] apiBase=${apiBase} backend=${backend}`)
-console.log(`[probe] 第 1 次：${fmt(snap)}  （首次采样算不出 tok/s）`)
+console.log(`[probe] 第 1 次：${fmt(snap)}  （首次采样只能用服务自报吞吐）`)
 console.log(`[probe] 第 2 次：${fmt(second)}`)
 console.log(`[probe] ---------------- 分项探测 ----------------`)
 console.log(`[probe] ${config.healthPath}       → ${await peek(config.healthPath)}`)
@@ -70,4 +72,8 @@ console.log(`[probe] /v1/loads?include=core → ${await peek('/v1/loads?include=
 if (snap.loadSource === 'none') {
   console.log('[probe] 读不到负载数据：SGLang 需启动加 --enable-metrics（或 ≥0.5.8 的 /v1/loads）；')
   console.log('[probe] vLLM 请确认 /metrics 可访问且未被 --api-key 拦住。')
+}
+if (second.state === 'busy' && !(second.tokensPerSec > 0)) {
+  console.log('[probe] 忙但 tok/s 为 0：SGLang 的 generation_tokens_total 只在请求结束时累加，')
+  console.log('[probe] 应有 sglang:realtime_tokens_total{mode="decode"} 或 sglang:gen_throughput 兜底（见上方分项探测）。')
 }

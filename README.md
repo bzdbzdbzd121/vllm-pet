@@ -34,7 +34,7 @@
 | 推理中请求数 | `vllm:num_requests_running` | `sglang:num_running_reqs` |
 | 排队请求数 | `vllm:num_requests_waiting` | `sglang:num_queue_reqs` |
 | KV cache 使用率 | `vllm:gpu_cache_usage_perc` / `vllm:kv_cache_usage_perc`（新版改名，两个都认） | `sglang:token_usage` |
-| 生成吞吐 | `vllm:generation_tokens_total` counter 采样求差 | `sglang:generation_tokens_total` counter 采样求差，无 counter 时用 `sglang:gen_throughput` |
+| 生成吞吐 | `vllm:generation_tokens_total` counter 采样求差 | `sglang:realtime_tokens_total{mode="decode"}`（每次迭代累加）采样求差，退化时用 `sglang:gen_throughput` |
 
 多 DP/TP rank、多 model 的指标求和成总量（SGLang 开 priority 调度时只取 `priority=""` 的总量行，
 不会重复计数）；KV cache 这类比率跨 rank 取最大值。忙碌时状态文本会带上实时吞吐
@@ -44,6 +44,11 @@
 > 读取 `/v1/loads?include=core`（SGLang ≥ 0.5.8），仍然能显示负载；两者都读不到时
 > 降级为"存活检测"（在线=空闲，掉线=离线），状态文本会显示 `空闲中（未读到负载指标）` 提醒你。
 > vLLM 侧始终有 `/metrics`，老版本没有该接口时才降级。
+>
+> **tok/s 为什么不用 `sglang:generation_tokens_total`？** 它在 SGLang 里只在**请求结束时**才累加
+> （`observe_one_finished_request`），长请求进行中差值恒为 0，算出来一直没有速率；
+> 所以优先用每次迭代都累加的 `realtime_tokens_total{mode="decode"}`，并用服务自报的
+> `gen_throughput` 兼顾刚起步/Prefill 阶段。
 
 | 条件（阈值可配置） | 状态 | 动画 |
 | --- | --- | --- |

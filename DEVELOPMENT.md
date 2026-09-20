@@ -72,7 +72,7 @@ scripts/mock-vllm.mjs       假推理服务（--backend vllm|sglang、--no-metri
 scripts/probe-load.mjs      排障用：打印某地址的采集结果（状态/引擎/数据来源/逐项 HTTP 码）
 scripts/smoke.mjs           集成冒烟（隐藏窗口 + 截图，见 §5）
 scripts/dev-desktop.mjs     vite dev server + Electron 热更新联调
-tests/*.test.mjs            node --test，53 个用例
+tests/*.test.mjs            node --test，64 个用例
 ```
 
 ## 3. 关键设计决策（勿轻易推翻）
@@ -96,6 +96,10 @@ tests/*.test.mjs            node --test，53 个用例
      （`_log_gauge_queue_count` 同时写两层，见 SGLang 源码）
    - **比率类（KV cache）跨 label 取最大**：比率相加无意义，任一 rank 逼近上限即算重载
    - **counter 跨 label 求和**：`*_tokens_total` 带 `is_streaming` 等 label，分片相加才是总量
+   - **选对 counter**：SGLang 的 `generation_tokens_total` 只在**请求结束**时累加
+     （`observe_one_finished_request`），长请求进行中差值为 0——“显示不出 tok/s”往往就是它；
+     SGLang 要用每次迭代都累加的 `realtime_tokens_total{mode="decode"}`，
+     并用 `gen_throughput` 兼顾刚起步/Prefill 阶段（策略集中在 `sampleGenerationRate()`）
    - 指标名是**精确匹配**（先切出名字再查表），所以 `*_total` / `*_by_reason` /
      `*_offline_batch` / `full_token_usage` 这类同前缀指标不会被误吞
 7. **读不到负载指标时不能断言"空闲"**：健康但无负载数据（SGLang 未开 `--enable-metrics`

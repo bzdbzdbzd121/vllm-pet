@@ -4,7 +4,7 @@
  *   MockStatusProvider — 浏览器预览：手动推送状态 + localStorage 模拟配置
  *   LiveFetchProvider  — 浏览器"真实直连"：直接 fetch vLLM（受 CORS 限制，仅调试用）
  */
-import { parsePrometheusMetrics, parseLoadsResponse, deriveState, tokenRate, DEFAULT_THRESHOLDS } from '../../shared/status-core.js'
+import { parsePrometheusMetrics, parseLoadsResponse, deriveState, sampleGenerationRate, DEFAULT_THRESHOLDS } from '../../shared/status-core.js'
 
 export const DEFAULT_CONFIG = Object.freeze({
   apiBase: '',
@@ -121,7 +121,7 @@ export class LiveFetchProvider {
     this._timer = 0
     this._stopped = true
     this._everConnected = false
-    this._lastGenTokens = null
+    this._lastGenSample = null
   }
 
   start(onStatus) {
@@ -195,15 +195,9 @@ export class LiveFetchProvider {
     if (healthOk) this._everConnected = true
     const { state, intensity } = deriveState({ healthOk, metrics: load }, this.opts.thresholds)
 
-    let tokensPerSec = null
-    if (load?.genTokensTotal != null) {
-      const curr = { value: load.genTokensTotal, at: Date.now() }
-      tokensPerSec = tokenRate(this._lastGenTokens, curr)
-      this._lastGenTokens = curr
-    } else if (load?.genThroughput != null) {
-      tokensPerSec = load.genThroughput
-      this._lastGenTokens = null
-    }
+    // 生成吞吐：优先 SGLang 每次迭代累加的 counter，其次累计 counter 求差，最后用服务自报吞吐
+    const { tokensPerSec, sample } = sampleGenerationRate(load, this._lastGenSample)
+    this._lastGenSample = sample
 
     return {
       state: healthOk ? state : wasConnected ? 'offline' : 'connecting',

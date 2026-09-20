@@ -15,8 +15,11 @@
  *     sglang:num_running_reqs      — 正在推理的请求数（gauge）
  *     sglang:num_queue_reqs        — 等待队列请求数（gauge）
  *     sglang:token_usage           — token 池（KV cache）使用率 0~1（gauge）
- *     sglang:prompt_tokens_total / sglang:generation_tokens_total（counter）
- *     sglang:gen_throughput        — 生成吞吐 tok/s（gauge，无 counter 时兜底）
+ *     sglang:realtime_tokens_total — 每次迭代（iteration）累加的 token，带 mode 标签：
+ *                                    decode 是生成 token（实时 tok/s 靠它）
+ *     sglang:generation_tokens_total — ⚠️ 只在**请求结束时**才累加（observe_one_finished_request），
+ *                                    长请求进行中差值恒为 0，不能用来算实时吞吐
+ *     sglang:gen_throughput        — 服务自报生成吞吐 tok/s（gauge，counter 算不出时兜底）
  *
  * 同名指标带多个 label（多 DP/TP rank、多 model、is_streaming…）时求和成总量；
  * 唯独 SGLang 的 priority 维度是"总量行 + 分档行"两层结构（priority="" 为总量，
@@ -39,6 +42,7 @@ export const BACKENDS = Object.freeze(['auto', 'vllm', 'sglang'])
  * kind: 'sum'     跨 label 求和（并发数、吞吐）
  *       'max'     跨 label 取最大（比率类，不该相加）
  *       'counter' 累计值，跨 label 求和，缺失时为 null
+ * modes: 同一个指标名按 label 拆到不同字段（如 SGLang realtime_tokens_total 的 mode）
  */
 const METRIC_SPECS = new Map([
   ['vllm:num_requests_running', { field: 'running', kind: 'sum', backend: 'vllm' }],
@@ -52,7 +56,13 @@ const METRIC_SPECS = new Map([
   ['sglang:token_usage', { field: 'cacheUsage', kind: 'max', backend: 'sglang' }],
   ['sglang:prompt_tokens_total', { field: 'promptTokensTotal', kind: 'counter', backend: 'sglang' }],
   ['sglang:generation_tokens_total', { field: 'genTokensTotal', kind: 'counter', backend: 'sglang' }],
-  ['sglang:gen_throughput', { field: 'genThroughput', kind: 'sum', backend: 'sglang' }]
+  ['sglang:gen_throughput', { field: 'genThroughput', kind: 'sum', backend: 'sglang' }],
+  // 只有 decode 模式是"输出 token"；prefill_compute/prefill_cache 不计入
+  ['sglang:realtime_tokens_total', {
+    modes: { decode: 'realtimeGenTokensTotal' },
+    kind: 'counter',
+    backend: 'sglang'
+  }]
 ])
 
 /** 空负载对象（解析不到任何指标时的形状） */
@@ -65,6 +75,7 @@ function emptyLoad() {
     cacheUsage: null,
     promptTokensTotal: null,
     genTokensTotal: null,
+    realtimeGenTokensTotal: null, // SGLang 每次迭代累加的 decode token（实时吞吐用）
     genThroughput: null
   }
 }
@@ -74,7 +85,8 @@ function emptyLoad() {
  * @param {string} text
  * @returns {{ backend: 'vllm'|'sglang'|null, hasConcurrency: boolean, running: number,
  *             waiting: number, cacheUsage: number|null, promptTokensTotal: number|null,
- *             genTokensTotal: number|null, genThroughput: number|null }}
+ *             genTokensTotal: number|null, realtimeGenTokensTotal: number|null,
+ *             genThroughput: number|null }}
  */
 export function parsePrometheusMetrics(text) {
   const result = emptyLoad()
@@ -87,11 +99,14 @@ export function parsePrometheusMetrics(text) {
     if (!sample) continue
     const spec = METRIC_SPECS.get(sample.name)
     if (!spec) continue
+    // modes：同名指标按 label（如 SGLang 的 mode）拆到不同字段，不关心的取值直接跳过
+    const field = spec.modes ? spec.modes[sample.mode] : spec.field
+    if (!field) continue
 
-    let bucket = buckets.get(spec.field)
+    let bucket = buckets.get(field)
     if (!bucket) {
       bucket = { kind: spec.kind, total: 0, part: 0, hasTotal: false, max: null }
-      buckets.set(spec.field, bucket)
+      buckets.set(field, bucket)
     }
     if (spec.kind === 'sum') {
       // SGLang 开 priority 调度时：priority="" 是总量行，priority="0"… 是分档行，只取其一
@@ -166,9 +181,39 @@ export function tokenRate(prev, curr) {
 }
 
 /**
+ * 生成吞吐（tok/s）采样：把"该用哪个 counter"的策略收在一处，主进程与预览页共用。
+ *
+ * 优先级：
+ *   1. SGLang `realtime_tokens_total{mode="decode"}`——每次迭代累加，实时且准确
+ *   2. 累计 counter（vLLM `generation_tokens_total` / SGLang 同名）两次采样求差
+ *   3. 服务自报 `gen_throughput`（SGLang 的累计 counter 只在请求结束时跳一下，
+ *      长请求进行中差值恒为 0，靠自报吞吐兼顾“刚起步/prefill 阶段”）
+ *
+ * @param {object|null} load 本次负载（parsePrometheusMetrics / parseLoadsResponse 的结果）
+ * @param {{ value: number, at: number, source: string }|null} prev 上一次采样
+ * @param {number} [at] 本次采样时间戳（毫秒）
+ * @returns {{ tokensPerSec: number|null, sample: { value: number, at: number, source: string }|null }}
+ */
+export function sampleGenerationRate(load, prev = null, at = Date.now()) {
+  const counter = load?.realtimeGenTokensTotal != null
+    ? { source: 'realtime', value: load.realtimeGenTokensTotal }
+    : load?.genTokensTotal != null
+      ? { source: 'total', value: load.genTokensTotal }
+      : null
+  const gauge = load?.genThroughput ?? null
+  if (!counter) return { tokensPerSec: gauge, sample: null }
+
+  // counter 源变了（指标消失/服务重启）就丢弃旧样本，避免跨源求差得到垃圾值
+  const rate = prev && prev.source === counter.source ? tokenRate(prev, { value: counter.value, at }) : null
+  let tokensPerSec = rate
+  if (!(tokensPerSec > 0) && gauge != null) tokensPerSec = gauge
+  return { tokensPerSec, sample: { value: counter.value, at, source: counter.source } }
+}
+
+/**
  * 读取一行样本 `metric_name{labels} value`。不匹配返回 null。
  * 精确匹配指标名（而不是前缀），天然避免把 `*_total`/`*_by_reason` 之类当成目标指标。
- * @returns {{ name: string, priority: string|null, value: number }|null}
+ * @returns {{ name: string, priority: string|null, mode: string|null, value: number }|null}
  */
 function readSample(line) {
   // 去首尾空白（兼容 CRLF 与行首缩进；注释行也会被下面精确匹配挡掉）
@@ -182,17 +227,20 @@ function readSample(line) {
 
   const name = trimmed.slice(0, nameEnd)
   let priority = null
+  let mode = null
   let rest = trimmed.slice(nameEnd)
   if (rest.startsWith('{')) {
     const end = rest.indexOf('}')
     if (end === -1) return null
-    priority = readLabel(rest.slice(1, end), 'priority')
+    const block = rest.slice(1, end)
+    priority = readLabel(block, 'priority')
+    mode = readLabel(block, 'mode')
     rest = rest.slice(end + 1)
   }
   const valueStr = rest.trim().split(/\s+/)[0]
   const value = Number.parseFloat(valueStr)
   if (!Number.isFinite(value)) return null
-  return { name, priority, value }
+  return { name, priority, mode, value }
 }
 
 /** 从 label 块里取一个标签值（标签名需完整匹配，避免撞上 xxx_priority） */
