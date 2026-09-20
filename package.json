@@ -1,7 +1,7 @@
 {
   "name": "vllm-pet",
-  "version": "0.1.9",
-  "description": "vLLM Pet — 实时反映 vLLM 推理服务状态的桌面宠物",
+  "version": "0.1.10",
+  "description": "vLLM Pet — 实时反映 vLLM / SGLang 推理服务状态的桌面宠物",
   "author": {
     "name": "bzdbzdbzd121",
     "email": "bzdbzdbzd121@users.noreply.github.com"
