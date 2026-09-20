@@ -390,7 +390,7 @@ if (!gotLock) {
       poller = new PollerService({
         getConfig: () => store.load(),
         onStatus: (snap) => {
-          console.log('[smoke] state =', snap.state, 'err =', snap.error || '')
+          console.log('[smoke] state =', snap.state, 'hint =', snap.hint || '', 'err =', snap.error || '')
           win?.webContents.send('status:update', snap)
         }
       })

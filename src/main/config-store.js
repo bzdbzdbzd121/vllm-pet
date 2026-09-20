@@ -7,6 +7,7 @@ import path from 'node:path'
 export const DEFAULT_CONFIG = Object.freeze({
   apiBase: '',
   apiKey: '',
+  backend: 'auto', // 'auto' | 'vllm' | 'sglang'（指标名自动识别，仅决定兜底与提示策略）
   pollIntervalMs: 2000,
   metricsPath: '/metrics',
   healthPath: '/health',

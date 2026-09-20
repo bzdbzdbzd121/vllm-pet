@@ -110,3 +110,9 @@ test('formatStatusLine：tok/s 显示与隐藏规则', () => {
     )
   }
 })
+
+test('formatStatusLine：读不到负载指标时，空闲文案带提示（SGLang 未开 --enable-metrics 等）', () => {
+  assert.equal(formatStatusLine(snap({ state: 'idle', hint: '未读到负载指标' })), '空闲中（未读到负载指标）')
+  // 有 hint 但非空闲态时不拼接（离线/连接中文案已各自说明原因）
+  assert.ok(!formatStatusLine(snap({ state: 'busy', running: 3, hint: '未读到负载指标' })).includes('未读到'))
+})

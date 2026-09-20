@@ -3,8 +3,9 @@
 > 🤖 **AI 生成声明**：本项目（代码、文档、图标、CI 配置）由 AI Agent（Kimi）全流程编写，
 > 人类负责需求提出、效果确认与发布决策。代码未经系统性人工审查，使用与二次开发请自行评估。
 
-一只住在桌面上的 vLLM 推理服务"状态晴雨表"：透明无边框的桌面宠物，定期轮询你的
-`vllm serve` 推理服务，根据实时负载切换形象与动画 —— 空闲时打盹，推理时挥汗狂奔。
+一只住在桌面上的推理服务"状态晴雨表"：透明无边框的桌面宠物，定期轮询你的
+**vLLM**（`vllm serve`）或 **SGLang**（`python -m sglang.launch_server`）服务，
+根据实时负载切换形象与动画 —— 空闲时打盹，推理时挥汗狂奔。
 
 | 桌宠窗口（推理中 · 中载） | 浏览器预览页 |
 | --- | --- |
@@ -12,7 +13,8 @@
 
 ## 功能特性
 
-- **实时状态联动**：轮询 vLLM 的 `/health` 与 `/metrics`，把负载映射成 7 种视觉状态
+- **实时状态联动**：轮询 `/health` 与 `/metrics`，把负载映射成 7 种视觉状态；
+  **vLLM 与 SGLang 指标名自动识别**（`vllm:*` / `sglang:*`），无需手选引擎
 - **负载三档动画**：轻载 / 中载 / 重载逐级加速，蒸汽、汗滴、速度线、屏幕闪烁依次上阵
 - **情感细节**：忙完一批任务会开心弹跳庆祝；长时间空闲会睡着（Zzz）；服务掉线变灰叹气
 - **启动即配置**：首次运行自动打开设置窗口，填入服务地址即可；右键宠物或托盘菜单随时修改
@@ -24,10 +26,24 @@
 
 ## 状态映射规则
 
-数据来源：`GET <apiBase>/health`（失败时 `/v1/models` 兜底）+ `GET <apiBase>/metrics`
-解析 `vllm:num_requests_running`、`vllm:num_requests_waiting`、`vllm:gpu_cache_usage_perc`；
-并采样 `vllm:generation_tokens_total` counter 计算实时生成吞吐，忙碌时显示在状态文本里
+数据来源：`GET <apiBase>/health`（失败时 `/v1/models` 兜底）+ `GET <apiBase>/metrics`。
+两族指标名都认，按前缀自动区分，`backend` 配置可强制指定（`auto` / `vllm` / `sglang`）：
+
+| 含义 | vLLM | SGLang |
+| --- | --- | --- |
+| 推理中请求数 | `vllm:num_requests_running` | `sglang:num_running_reqs` |
+| 排队请求数 | `vllm:num_requests_waiting` | `sglang:num_queue_reqs` |
+| KV cache 使用率 | `vllm:gpu_cache_usage_perc` / `vllm:kv_cache_usage_perc`（新版改名，两个都认） | `sglang:token_usage` |
+| 生成吞吐 | `vllm:generation_tokens_total` counter 采样求差 | `sglang:generation_tokens_total` counter 采样求差，无 counter 时用 `sglang:gen_throughput` |
+
+多 DP/TP rank、多 model 的指标求和成总量（SGLang 开 priority 调度时只取 `priority=""` 的总量行，
+不会重复计数）；KV cache 这类比率跨 rank 取最大值。忙碌时状态文本会带上实时吞吐
 （如 `推理中 ×7 · 队列 3 · 294 tok/s · KV 66%`，算不出或为 0 时不显示）。
+
+> **SGLang 默认不暴露 `/metrics`**（需启动加 `--enable-metrics`）。没开时桌宠会自动回退
+> 读取 `/v1/loads?include=core`（SGLang ≥ 0.5.8），仍然能显示负载；两者都读不到时
+> 降级为"存活检测"（在线=空闲，掉线=离线），状态文本会显示 `空闲中（未读到负载指标）` 提醒你。
+> vLLM 侧始终有 `/metrics`，老版本没有该接口时才降级。
 
 | 条件（阈值可配置） | 状态 | 动画 |
 | --- | --- | --- |
@@ -40,7 +56,7 @@
 | ≥ 16 或 KV cache ≥ 85%（重载阈值） | 🔥 推理中·重 | 极速摆动+抖动、蒸汽喷射、速度线、脸屏闪烁 |
 | 忙碌 → 空闲的瞬时 | 🎉 庆祝 | 开心弯眼弹跳 + 闪光（一次性） |
 
-> 老版本 vLLM 没有 `/metrics` 时自动降级为"存活检测"：在线=空闲，掉线=离线。
+> 老版本服务没有 `/metrics` 时自动降级为"存活检测"：在线=空闲，掉线=离线。
 
 ## 下载安装（GitHub Release）
 
@@ -109,8 +125,9 @@ npm run dev:desktop   # vite dev server + Electron 联动，改渲染层代码�
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `apiBase` | `""` | vLLM 服务地址，空 = 未配置（首次运行自动打开设置窗口） |
+| `apiBase` | `""` | 推理服务地址（vLLM 默认 8000，SGLang 默认 30000），空 = 未配置（首次运行自动打开设置窗口） |
 | `apiKey` | `""` | 可选，携带 `Authorization: Bearer <key>` |
+| `backend` | `auto` | 推理引擎：`auto`（按指标名自动识别）/ `vllm` / `sglang`；只在读不到 `/metrics` 时影响兜底与提示策略 |
 | `pollIntervalMs` | `2000` | 轮询间隔 |
 | `healthPath` / `metricsPath` | `/health` `/metrics` | 端点路径，可自定义 |
 | `thresholds` | `{light:1, medium:4, heavy:16, cacheHeavy:0.85}` | 负载分档阈值（并发 = running + waiting） |
@@ -173,7 +190,7 @@ npm run dist                 # 本机平台安装包 → out/
 
 ```
 pet.html / index.html      # 桌宠窗口页 / 浏览器预览页
-src/shared/status-core.js  # 纯函数：Prometheus 解析 + 状态推导（主进程与渲染层共用）
+src/shared/status-core.js  # 纯函数：vLLM/SGLang Prometheus 解析 + /v1/loads 解析 + 状态推导
 src/shared/update-core.js  # 纯函数：版本比较 / 安装包挑选 / 更新脚本生成
 src/renderer/              # 渲染层
   robot/                   #   PetView + 全部状态动画（SVG + CSS）
@@ -181,21 +198,29 @@ src/renderer/              # 渲染层
   skins/default-robot/     #   内置皮肤"小V"
   ui/settings-panel.js     #   气泡设置面板
 src/main/                  # Electron 主进程：窗口/托盘/轮询/配置/皮肤目录/自更新/IPC
-scripts/                   # mock-vllm / dev-desktop / smoke / generate_icons
-tests/                     # node --test 单元测试
+scripts/                   # mock-vllm（vLLM/SGLang）/ probe-load / dev-desktop / smoke / generate_icons
+tests/                     # node --test 单元测试 + 采集链路集成测试
 ```
 
 ## 验证与测试
 
 ```bash
-npm test        # 状态解析/推导单元测试
+npm test        # 单元/集成测试（指标解析、分档推导、采集链路与兜底）
 npm run smoke   # 集成冒烟：隐藏窗口启动 + 截图 smoke-pet.png
+
+# 不开 Electron 也能定位采集问题（显示状态/引擎/数据来源，并逐个探测接口 HTTP 码）
+node scripts/probe-load.mjs http://127.0.0.1:30000          # SGLang 默认端口
+node scripts/probe-load.mjs http://127.0.0.1:8000  vllm     # vLLM 默认端口
 ```
 
 想参与开发或让 AI Agent 继续迭代？架构、约定与排坑指南见 **[DEVELOPMENT.md](DEVELOPMENT.md)**。
 
 ## 常见问题
 
+- **服务明明在推理，宠物却显示"空闲中（未读到负载指标）"？** 读不到负载数据的降级表现。
+  SGLang 默认不暴露 `/metrics`，用 `--enable-metrics` 重启即恢复正常；不想重启的话
+  升到 SGLang ≥ 0.5.8 也能自动走 `/v1/loads` 兜底。先用
+  `node scripts/probe-load.mjs <你的服务地址>` 看是哪个接口没通。
 - **预览页"直连真实服务"失败？** 浏览器跨源受 vLLM 服务的 CORS 限制，属正常现象；
   桌面版在主进程轮询，不受此限制。
 - **开了"鼠标穿透"点不到宠物了？** 右键托盘图标 → 取消勾选"鼠标穿透"。

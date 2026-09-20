@@ -1,7 +1,8 @@
 /**
  * state-machine.js — 把 StatusSnapshot 流映射为桌宠视觉状态。
  *
- * StatusSnapshot: { state, intensity, running, waiting, cacheUsage, latencyMs, models, error, updatedAt }
+ * StatusSnapshot: { state, intensity, backend, loadSource, running, waiting, cacheUsage,
+ *                   tokensPerSec, latencyMs, models, hint, error, updatedAt }
  * 视觉状态: 'idle' | 'sleeping' | 'connecting' | 'busy-1..3' | 'offline'
  */
 const SLEEP_CHECK_MS = 2000
@@ -108,7 +109,8 @@ export function formatStatusLine(snap) {
       return parts.join(' · ')
     }
     case 'idle':
-      return '空闲中'
+      // 没有负载数据时（如 SGLang 未开 --enable-metrics）不能断言真的空闲，括号里说明
+      return snap.hint ? `空闲中（${snap.hint}）` : '空闲中'
     default:
       return ''
   }

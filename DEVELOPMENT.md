@@ -8,19 +8,32 @@
 
 ## 1. 这是什么
 
-透明无边框的桌面宠物（Electron），主进程定期轮询 `vllm serve` 推理服务的
+透明无边框的桌面宠物（Electron），主进程定期轮询推理服务（**vLLM** 或 **SGLang**）的
 `/health` 与 `/metrics`，把负载映射成 7 种视觉状态（空闲/睡觉/连接中/轻中重三档推理/离线）
 + 一次性"庆祝"动画。形象是内联 SVG + CSS keyframes，无前端框架。
 
 ## 2. 架构与数据流
 
 ```
-vllm serve ──HTTP──> PollerService (主进程) ──IPC "status:update"──> PetStateMachine ──> PetView
-                     src/main/poller-service.js                       state-machine.js    pet.js
-                            │                                               │
-                            └── GET /health (失败时 /v1/models 兜底)        └── deriveState 纯函数
-                                GET /metrics ──> parsePrometheusMetrics        (shared/status-core.js)
+vllm serve ─┐
+            ├─HTTP─> PollerService (主进程) ──IPC "status:update"──> PetStateMachine ──> PetView
+sglang serv ┘         src/main/poller-service.js                       state-machine.js    pet.js
+                             │                                               │
+                             └── GET /health (失败时 /v1/models 兜底)        └── deriveState 纯函数
+                                 GET /metrics ──> parsePrometheusMetrics        (shared/status-core.js)
+                                 GET /v1/loads ──> parseLoadsResponse（兜底）
 ```
+
+**采集链路（poller-service.js `_poll`，配置 `backend` = auto/vllm/sglang）**：
+
+1. `GET <apiBase><healthPath>` 判活；失败时 `GET /v1/models` 兜底（顺带取模型名）
+2. `GET <apiBase><metricsPath>` → `parsePrometheusMetrics`：`vllm:*` 与 `sglang:*` 两族指标名
+   一起认（按前缀区分，多 rank 求和，见 §3.6）
+3. 没读到并发指标时（典型：SGLang 没加 `--enable-metrics`）兜底
+   `GET /v1/loads?include=core`（SGLang ≥ 0.5.8）→ `parseLoadsResponse`；
+   探测失败后 60s 内不再重试（`_loadsUnsupported` 退避），`backend='vllm'` 时直接跳过
+4. `deriveState` 推导状态；快照附 `backend`（认出的引擎）、`loadSource`（metrics/loads/none）、
+   `hint`（无负载数据时给 UI 的短提示）
 
 **三层状态模型，改代码时务必分清：**
 
@@ -55,10 +68,11 @@ src/renderer/status/state-machine.js  快照 → 视觉状态（含 stateMap、�
 src/renderer/status/providers.js      IPC / Mock / 浏览器直连三种状态来源 + 默认配置
 src/renderer/ui/settings-panel.js     浏览器模式下的内嵌设置气泡
 src/renderer/skins/         皮肤加载器 + 内置皮肤（default-robot + 4 款换色）
-scripts/mock-vllm.mjs       假 vLLM 服务（--port/--running/--waiting/--cache/--cycle）
+scripts/mock-vllm.mjs       假推理服务（--backend vllm|sglang、--no-metrics、--port/--running/--waiting/--cache/--cycle）
+scripts/probe-load.mjs      排障用：打印某地址的采集结果（状态/引擎/数据来源/逐项 HTTP 码）
 scripts/smoke.mjs           集成冒烟（隐藏窗口 + 截图，见 §5）
 scripts/dev-desktop.mjs     vite dev server + Electron 热更新联调
-tests/*.test.mjs            node --test，30 个用例
+tests/*.test.mjs            node --test，53 个用例
 ```
 
 ## 3. 关键设计决策（勿轻易推翻）
@@ -73,6 +87,20 @@ tests/*.test.mjs            node --test，30 个用例
    成功过一次之后再失败才是 `offline`。
 5. **皮肤只是数据**：`skin.json`（配色/动画时长/palette）+ 可选整只 `robot.svg` 替换；
    加载逻辑在 `skin-loader.js`，用户皮肤目录 `<userData>/skins/<name>/`。
+6. **指标解析与引擎无关**：`status-core.js` 的 `METRIC_SPECS` 把 `vllm:*` / `sglang:*` 两族
+   指标名映射到同一套字段（running/waiting/cacheUsage/…），新增引擎只需往表里加行。
+   聚合规则是这个文件里最容易被改错的部分：
+   - **并发类 gauge 跨 label 求和**（多 DP/TP rank、多 model 是不同子集，相加才是总量）
+   - **例外：SGLang 开 priority 调度时 label 分两层**——`priority=""` 是总量行，
+     `priority="0"/"1"` 是分档行；两者相加会双倍计数，所以只取总量行
+     （`_log_gauge_queue_count` 同时写两层，见 SGLang 源码）
+   - **比率类（KV cache）跨 label 取最大**：比率相加无意义，任一 rank 逼近上限即算重载
+   - **counter 跨 label 求和**：`*_tokens_total` 带 `is_streaming` 等 label，分片相加才是总量
+   - 指标名是**精确匹配**（先切出名字再查表），所以 `*_total` / `*_by_reason` /
+     `*_offline_batch` / `full_token_usage` 这类同前缀指标不会被误吞
+7. **读不到负载指标时不能断言"空闲"**：健康但无负载数据（SGLang 未开 `--enable-metrics`
+   且 `/v1/loads` 也不行）时状态仍是 idle，因此快照带 `hint`，UI 会显示
+   `空闲中（未读到负载指标）`；新增后端时保持这个降级语义，不要静默假装一切正常。
 
 ## 4. ⚠️ 排坑指南（都踩过，别再踩）
 
@@ -99,6 +127,10 @@ tests/*.test.mjs            node --test，30 个用例
    CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac dmg
    ```
    electron-builder 偶发网络超时，重试即可；产物在 `out/`。
+8. **别用 vLLM 的指标名去猜 SGLang**：SGLang 的指标名完全不同（`sglang:num_running_reqs` /
+   `sglang:num_queue_reqs` / `sglang:token_usage`），而且**默认不暴露 `/metrics`**
+   （要启动加 `--enable-metrics`，`enable_metrics` 默认为 `False`）。只认 `vllm:*` 会导致
+   "明明在推理却显示空闲中"——这正是 `backend` 兜底与 `hint` 存在的原因。
 
 ## 5. 验证工作流（提交前必做）
 
@@ -118,7 +150,25 @@ npm run smoke     # ③ 集成冒烟：隐藏窗口启动 Electron，截图 smok
 | `VLLM_PET_SMOKE_SIZE` | 窗口尺寸，如 `1000x780` |
 | `VLLM_PET_SMOKE_DELAY` | did-finish-load 后延迟多少毫秒截图（默认 2500） |
 
-冒烟模式下主进程会打印每次状态推送（`[smoke] state = ...`），方便确认状态流转。
+冒烟模式下主进程会打印每次状态推送（`[smoke] state = ... hint = ...`），方便确认状态流转。
+
+**采集链路不用开 Electron 就能验证**（改 `status-core.js` / `poller-service.js` 后最快的手段）：
+
+```bash
+# ① 单元 + 集成用例（假服务 + 真 PollerService，覆盖 SGLang 指标/priority/loads 兜底/退避）
+npm test
+
+# ② 起 mock 后用 probe 脚本看真实采集结果（状态、引擎、数据来源、逐项探测 HTTP 码）
+node scripts/mock-vllm.mjs --port 18101 --backend sglang --running 24 --waiting 9 --cache 0.92 &
+node scripts/mock-vllm.mjs --port 18102 --backend sglang --no-metrics --running 24 --waiting 9 &
+node scripts/mock-vllm.mjs --port 18103 --running 2 --waiting 0 --cache 0.4 &
+sleep 1
+node scripts/probe-load.mjs http://127.0.0.1:18101 auto     # → busy/loadSource=metrics
+node scripts/probe-load.mjs http://127.0.0.1:18102 auto     # → busy/loadSource=loads（/metrics 404）
+node scripts/probe-load.mjs http://127.0.0.1:18102 vllm     # → idle/hint=未读到负载指标（不试兜底）
+node scripts/probe-load.mjs http://127.0.0.1:18103 auto     # → busy/backend=vllm（回归）
+pkill -f "mock-vllm.mjs --port 181"
+```
 
 **视觉验证的标准动作**（改任何 `robot.svg` / `robot.css` / 布局后都要做）：
 
@@ -128,6 +178,12 @@ node scripts/mock-vllm.mjs --port 18099 --running 24 --waiting 9 --cache 0.92 &
 sleep 1
 VLLM_PET_SMOKE_APIBASE=http://127.0.0.1:18099 VLLM_PET_SMOKE_SCALE=1.5 node scripts/smoke.mjs
 pkill -f "mock-vllm.mjs --port 18099"
+
+# SGLang 两种采集路径同样可冒烟（--backend sglang / 再加 --no-metrics 走 /v1/loads 兜底）
+node scripts/mock-vllm.mjs --port 18098 --backend sglang --no-metrics --running 24 --waiting 9 &
+sleep 1
+VLLM_PET_SMOKE_APIBASE=http://127.0.0.1:18098 node scripts/smoke.mjs   # 应打印 state = busy
+pkill -f "mock-vllm.mjs --port 18098"
 
 # 离线：先让它连上一次，再 pkill mock，加大截图延迟等状态转 offline
 node scripts/mock-vllm.mjs --port 18099 --running 0 --waiting 0 &
@@ -159,6 +215,12 @@ sleep 2 && pkill -f "mock-vllm.mjs --port 18099" && sleep 9
 **调整负载分档逻辑**：只改 `status-core.js#deriveState`（+ `DEFAULT_THRESHOLDS`），
 单测在 `tests/status-core.test.mjs`。别把推导逻辑塞进 poller 或渲染层。
 
+**新增/修改后端采集**（如再支持一个新引擎）：
+1. `status-core.js#METRIC_SPECS` 加指标名 → 字段映射（聚合规则见 §3.6）
+2. 需要额外接口兜底时改 `poller-service.js#_poll`，并在 `providers.js#LiveFetchProvider` 同步
+3. `status-core.js#BACKENDS` + 两处默认值加 `backend` 选项，设置面板 `BACKEND_OPTIONS` 加一项
+4. `tests/status-core.test.mjs` / `tests/poller-service.test.mjs` 加用例，`mock-vllm.mjs` 加 mock 模式
+
 **做新皮肤**：读 [src/renderer/skins/README.md](src/renderer/skins/README.md)；
 SVG class 钩子表以它为准。改 `default-robot/robot.svg` 的结构（新增/改名 class）时，
 必须同步更新该 README 的钩子表。
@@ -170,8 +232,12 @@ SVG class 钩子表以它为准。改 `default-robot/robot.svg` 的结构（新�
   根治需 Apple 开发者账号签名 + 公证（CI 配 CSC/APPLE 相关 secrets）。
 - Windows/Linux 实机未人工验证过（CI 构建通过，未实际上机运行）。
 - 窗口位置记忆（`window.x/y`）已实现；多显示器边缘吸附未做。
+- SGLang 采集覆盖：已支持 `sglang:*` 指标（含 priority 分档、多 rank）与 ≥ 0.5.8 的
+  `/v1/loads` 兜底；SGLang < 0.5.8 且未开 `--enable-metrics` 时只能判在线/离线（显示 hint）。
+  未接 SGLang 的 `/server_info`（整份 server args，回报大）与 `/v1/loads` 的 memory/spec/queues 段。
 - 候选增强：单击宠物显隐状态文本、皮肤热重载、更多内置皮肤、
-  多服务轮询（多个 vLLM 实例聚合状态）、系统资源占用显示（GPU 显存）。
+  多服务轮询（多个实例聚合状态）、系统资源占用显示（GPU 显存）、
+  SGLang router / DP 网关的聚合负载（当前只读单实例）。
 
 ## 8. 提交约定
 

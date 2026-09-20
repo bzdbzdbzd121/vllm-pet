@@ -4,11 +4,12 @@
  *   MockStatusProvider — 浏览器预览：手动推送状态 + localStorage 模拟配置
  *   LiveFetchProvider  — 浏览器"真实直连"：直接 fetch vLLM（受 CORS 限制，仅调试用）
  */
-import { parsePrometheusMetrics, deriveState, tokenRate, DEFAULT_THRESHOLDS } from '../../shared/status-core.js'
+import { parsePrometheusMetrics, parseLoadsResponse, deriveState, tokenRate, DEFAULT_THRESHOLDS } from '../../shared/status-core.js'
 
 export const DEFAULT_CONFIG = Object.freeze({
   apiBase: '',
   apiKey: '',
+  backend: 'auto', // 'auto' | 'vllm' | 'sglang'
   pollIntervalMs: 2000,
   metricsPath: '/metrics',
   healthPath: '/health',
@@ -176,26 +177,46 @@ export class LiveFetchProvider {
       } catch { /* 老版本可能没有 /metrics，降级为仅存活检测 */ }
     }
 
+    // 兜底：SGLang 未开 --enable-metrics 时用 /v1/loads 取负载（与主进程 poller 同策略）
+    let load = metrics
+    let loadSource = metrics?.hasConcurrency ? 'metrics' : 'none'
+    if (healthOk && !metrics?.hasConcurrency && this.opts.backend !== 'vllm') {
+      try {
+        const res = await fetchWithTimeout(base + '/v1/loads?include=core', { headers }, 4000)
+        const parsed = res.ok ? parseLoadsResponse(await res.json().catch(() => null)) : null
+        if (parsed) {
+          load = parsed
+          loadSource = 'loads'
+        }
+      } catch { /* 不是 SGLang 或版本过老：保持"仅存活检测" */ }
+    }
+
     const wasConnected = this._everConnected
     if (healthOk) this._everConnected = true
-    const { state, intensity } = deriveState({ healthOk, metrics }, this.opts.thresholds)
+    const { state, intensity } = deriveState({ healthOk, metrics: load }, this.opts.thresholds)
 
     let tokensPerSec = null
-    if (metrics?.genTokensTotal != null) {
-      const curr = { value: metrics.genTokensTotal, at: Date.now() }
+    if (load?.genTokensTotal != null) {
+      const curr = { value: load.genTokensTotal, at: Date.now() }
       tokensPerSec = tokenRate(this._lastGenTokens, curr)
       this._lastGenTokens = curr
+    } else if (load?.genThroughput != null) {
+      tokensPerSec = load.genThroughput
+      this._lastGenTokens = null
     }
 
     return {
       state: healthOk ? state : wasConnected ? 'offline' : 'connecting',
       intensity,
-      running: metrics?.running ?? 0,
-      waiting: metrics?.waiting ?? 0,
-      cacheUsage: metrics?.cacheUsage ?? null,
+      backend: load?.backend ?? null,
+      loadSource,
+      running: load?.running ?? 0,
+      waiting: load?.waiting ?? 0,
+      cacheUsage: load?.cacheUsage ?? null,
       tokensPerSec,
       latencyMs: Date.now() - startedAt,
       models,
+      hint: healthOk && loadSource === 'none' ? '未读到负载指标' : null,
       error: healthOk ? null : error || '无法连接（浏览器直连受 CORS 限制）',
       updatedAt: Date.now()
     }

@@ -1,12 +1,27 @@
 /**
- * status-core.js — vLLM 服务状态解析与推导（纯函数，零依赖，浏览器/Node 通用）
+ * status-core.js — 推理服务（vLLM / SGLang）状态解析与推导（纯函数，零依赖，浏览器/Node 通用）
  *
- * vLLM `/metrics` 暴露的 Prometheus 关键指标：
- *   vllm:num_requests_running   — 正在推理的请求数（带 label 时有多行）
- *   vllm:num_requests_waiting   — 排队等待的请求数
- *   vllm:gpu_cache_usage_perc   — KV cache 使用率 0~1
- *   vllm:prompt_tokens_total    — 累计输入 token 数（counter，多 label 求和）
- *   vllm:generation_tokens_total— 累计生成 token 数（counter，两次采样求差即 tok/s）
+ * 两族指标名靠前缀区分，自动识别、互不冲突：
+ *
+ *   vLLM `/metrics`
+ *     vllm:num_requests_running    — 正在推理的请求数（gauge）
+ *     vllm:num_requests_waiting    — 排队等待的请求数（gauge）
+ *     vllm:gpu_cache_usage_perc    — KV cache 使用率 0~1（≤ v0.26）
+ *     vllm:kv_cache_usage_perc     — KV cache 使用率 0~1（v0.27+ 改名，两个名字都认）
+ *     vllm:prompt_tokens_total     — 累计输入 token（counter）
+ *     vllm:generation_tokens_total — 累计生成 token（counter，两次采样求差即 tok/s）
+ *
+ *   SGLang `/metrics`（需启动加 --enable-metrics，默认关闭）
+ *     sglang:num_running_reqs      — 正在推理的请求数（gauge）
+ *     sglang:num_queue_reqs        — 等待队列请求数（gauge）
+ *     sglang:token_usage           — token 池（KV cache）使用率 0~1（gauge）
+ *     sglang:prompt_tokens_total / sglang:generation_tokens_total（counter）
+ *     sglang:gen_throughput        — 生成吞吐 tok/s（gauge，无 counter 时兜底）
+ *
+ * 同名指标带多个 label（多 DP/TP rank、多 model、is_streaming…）时求和成总量；
+ * 唯独 SGLang 的 priority 维度是"总量行 + 分档行"两层结构（priority="" 为总量，
+ * priority="0"/"1"… 为分档），只取总量行，避免重复计数。
+ * 比率类指标（KV cache 使用率）跨 label 取最大值：任一 rank 逼近上限都算重载。
  */
 
 export const DEFAULT_THRESHOLDS = Object.freeze({
@@ -16,43 +31,123 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   cacheHeavy: 0.85 // KV cache 占用 >= 85% 也视为重载
 })
 
+/** 支持的后端类型（配置项 backend） */
+export const BACKENDS = Object.freeze(['auto', 'vllm', 'sglang'])
+
+/**
+ * 指标名 → 字段映射。
+ * kind: 'sum'     跨 label 求和（并发数、吞吐）
+ *       'max'     跨 label 取最大（比率类，不该相加）
+ *       'counter' 累计值，跨 label 求和，缺失时为 null
+ */
+const METRIC_SPECS = new Map([
+  ['vllm:num_requests_running', { field: 'running', kind: 'sum', backend: 'vllm' }],
+  ['vllm:num_requests_waiting', { field: 'waiting', kind: 'sum', backend: 'vllm' }],
+  ['vllm:gpu_cache_usage_perc', { field: 'cacheUsage', kind: 'max', backend: 'vllm' }],
+  ['vllm:kv_cache_usage_perc', { field: 'cacheUsage', kind: 'max', backend: 'vllm' }],
+  ['vllm:prompt_tokens_total', { field: 'promptTokensTotal', kind: 'counter', backend: 'vllm' }],
+  ['vllm:generation_tokens_total', { field: 'genTokensTotal', kind: 'counter', backend: 'vllm' }],
+  ['sglang:num_running_reqs', { field: 'running', kind: 'sum', backend: 'sglang' }],
+  ['sglang:num_queue_reqs', { field: 'waiting', kind: 'sum', backend: 'sglang' }],
+  ['sglang:token_usage', { field: 'cacheUsage', kind: 'max', backend: 'sglang' }],
+  ['sglang:prompt_tokens_total', { field: 'promptTokensTotal', kind: 'counter', backend: 'sglang' }],
+  ['sglang:generation_tokens_total', { field: 'genTokensTotal', kind: 'counter', backend: 'sglang' }],
+  ['sglang:gen_throughput', { field: 'genThroughput', kind: 'sum', backend: 'sglang' }]
+])
+
+/** 空负载对象（解析不到任何指标时的形状） */
+function emptyLoad() {
+  return {
+    backend: null, // 认出指标的引擎（'vllm' | 'sglang'）；null = 一条指标都没认出来
+    hasConcurrency: false, // 是否读到并发（running）指标 —— 没有它就无法判断忙/闲
+    running: 0,
+    waiting: 0,
+    cacheUsage: null,
+    promptTokensTotal: null,
+    genTokensTotal: null,
+    genThroughput: null
+  }
+}
+
 /**
  * 解析 Prometheus 文本。永不抛异常；文本非法时返回全零对象。
- * counter 指标（*_tokens_total）缺失时为 null，存在时跨 label 行求和。
  * @param {string} text
- * @returns {{ running: number, waiting: number, cacheUsage: number|null,
- *             promptTokensTotal: number|null, genTokensTotal: number|null }}
+ * @returns {{ backend: 'vllm'|'sglang'|null, hasConcurrency: boolean, running: number,
+ *             waiting: number, cacheUsage: number|null, promptTokensTotal: number|null,
+ *             genTokensTotal: number|null, genThroughput: number|null }}
  */
 export function parsePrometheusMetrics(text) {
-  const result = { running: 0, waiting: 0, cacheUsage: null, promptTokensTotal: null, genTokensTotal: null }
+  const result = emptyLoad()
   if (typeof text !== 'string' || text.length === 0) return result
 
-  const gauges = {
-    'vllm:num_requests_running': 'running',
-    'vllm:num_requests_waiting': 'waiting'
-  }
-  const counters = {
-    'vllm:prompt_tokens_total': 'promptTokensTotal',
-    'vllm:generation_tokens_total': 'genTokensTotal'
-  }
-  const CACHE = 'vllm:gpu_cache_usage_perc'
-
+  /** @type {Map<string, {kind: string, total: number, part: number, hasTotal: boolean, max: number|null}>} */
+  const buckets = new Map()
   for (const rawLine of text.split('\n')) {
-    const line = rawLine.trim()
-    if (!line || line.startsWith('#')) continue
+    const sample = readSample(rawLine)
+    if (!sample) continue
+    const spec = METRIC_SPECS.get(sample.name)
+    if (!spec) continue
 
-    for (const [metric, field] of Object.entries(gauges)) {
-      const value = matchMetricValue(line, metric)
-      if (value !== null) result[field] += value
+    let bucket = buckets.get(spec.field)
+    if (!bucket) {
+      bucket = { kind: spec.kind, total: 0, part: 0, hasTotal: false, max: null }
+      buckets.set(spec.field, bucket)
     }
-    for (const [metric, field] of Object.entries(counters)) {
-      const value = matchMetricValue(line, metric)
-      if (value !== null) result[field] = (result[field] ?? 0) + value
+    if (spec.kind === 'sum') {
+      // SGLang 开 priority 调度时：priority="" 是总量行，priority="0"… 是分档行，只取其一
+      if (sample.priority) bucket.part += sample.value
+      else {
+        bucket.total += sample.value
+        bucket.hasTotal = true
+      }
+    } else if (spec.kind === 'max') {
+      bucket.max = bucket.max === null ? sample.value : Math.max(bucket.max, sample.value)
+    } else {
+      bucket.total += sample.value
+      bucket.hasTotal = true
     }
-    const cache = matchMetricValue(line, CACHE)
-    if (cache !== null) result.cacheUsage = cache
+    if (!result.backend) result.backend = spec.backend
+  }
+
+  result.hasConcurrency = buckets.has('running')
+  for (const [field, bucket] of buckets) {
+    if (bucket.kind === 'max') result[field] = bucket.max
+    else if (bucket.kind === 'counter') result[field] = bucket.hasTotal ? bucket.total : null
+    else result[field] = bucket.hasTotal ? bucket.total : bucket.part
   }
   return result
+}
+
+/**
+ * 解析 SGLang `/v1/loads?include=core`（v0.5.8+）响应；
+ * 兼容 `/get_load`（v0.5.20+ 的同结构记录数组）。
+ * 用于 SGLang 未开 `--enable-metrics` 时兜底取负载。
+ * @param {any} data JSON 响应体
+ * @returns {ReturnType<typeof emptyLoad>|null} 无法解析时返回 null
+ */
+export function parseLoadsResponse(data) {
+  const loads = Array.isArray(data?.loads) ? data.loads : Array.isArray(data) ? data : null
+  if (!loads || loads.length === 0) return null
+
+  let running = 0
+  let waiting = 0
+  let cacheUsage = null
+  let genThroughput = null
+  for (const item of loads) {
+    if (!item || typeof item !== 'object') continue
+    const waitingReqs = toNumber(item.num_waiting_reqs)
+    waiting += waitingReqs
+    // /v1/loads 给 num_running_reqs；旧 /get_load 只给 num_reqs（= running + waiting）
+    const runningReqs = item.num_running_reqs != null
+      ? toNumber(item.num_running_reqs)
+      : toNumber(item.num_reqs) - waitingReqs
+    running += Math.max(0, runningReqs)
+    if (item.token_usage != null) {
+      cacheUsage = cacheUsage === null ? toNumber(item.token_usage) : Math.max(cacheUsage, toNumber(item.token_usage))
+    }
+    if (item.gen_throughput != null) genThroughput = (genThroughput ?? 0) + toNumber(item.gen_throughput)
+  }
+  return { ...emptyLoad(), backend: 'sglang', hasConcurrency: true, running, waiting, cacheUsage, genThroughput }
 }
 
 /**
@@ -71,21 +166,55 @@ export function tokenRate(prev, curr) {
 }
 
 /**
- * 匹配 `metric_name{labels} value` 或 `metric_name value` 行。
- * @returns {number|null}
+ * 读取一行样本 `metric_name{labels} value`。不匹配返回 null。
+ * 精确匹配指标名（而不是前缀），天然避免把 `*_total`/`*_by_reason` 之类当成目标指标。
+ * @returns {{ name: string, priority: string|null, value: number }|null}
  */
-function matchMetricValue(line, metric) {
-  if (!line.startsWith(metric)) return null
-  const rest = line.slice(metric.length)
-  // 避免把 vllm:num_requests_running_total 之类当成目标指标
-  if (!rest.startsWith('{') && !rest.startsWith(' ') && !rest.startsWith('\t')) return null
-  const valueStr = rest.replace(/^\{[^}]*\}/, '').trim().split(/\s+/)[0]
+function readSample(line) {
+  // 去首尾空白（兼容 CRLF 与行首缩进；注释行也会被下面精确匹配挡掉）
+  const trimmed = line.trim()
+  const braceIdx = trimmed.indexOf('{')
+  const spaceIdx = trimmed.search(/[ \t]/)
+  let nameEnd = -1
+  if (braceIdx !== -1 && (spaceIdx === -1 || braceIdx < spaceIdx)) nameEnd = braceIdx
+  else if (spaceIdx !== -1) nameEnd = spaceIdx
+  if (nameEnd <= 0) return null
+
+  const name = trimmed.slice(0, nameEnd)
+  let priority = null
+  let rest = trimmed.slice(nameEnd)
+  if (rest.startsWith('{')) {
+    const end = rest.indexOf('}')
+    if (end === -1) return null
+    priority = readLabel(rest.slice(1, end), 'priority')
+    rest = rest.slice(end + 1)
+  }
+  const valueStr = rest.trim().split(/\s+/)[0]
   const value = Number.parseFloat(valueStr)
-  return Number.isFinite(value) ? value : null
+  if (!Number.isFinite(value)) return null
+  return { name, priority, value }
+}
+
+/** 从 label 块里取一个标签值（标签名需完整匹配，避免撞上 xxx_priority） */
+function readLabel(block, key) {
+  const needle = `${key}="`
+  let idx = block.indexOf(needle)
+  while (idx !== -1) {
+    const start = idx + needle.length
+    const end = block.indexOf('"', start)
+    if ((idx === 0 || block[idx - 1] === ',') && end !== -1) return block.slice(start, end)
+    idx = block.indexOf(needle, idx + 1)
+  }
+  return null
+}
+
+function toNumber(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
 }
 
 /**
- * 由健康检查 + 指标推导桌宠状态。
+ * 由健康检查 + 负载指标推导桌宠状态。
  * @param {{ healthOk: boolean, metrics: object|null, prevState?: string }} input
  * @param {Partial<typeof DEFAULT_THRESHOLDS>} [thresholds]
  * @returns {{ state: 'offline'|'idle'|'busy', intensity: 0|1|2|3 }}

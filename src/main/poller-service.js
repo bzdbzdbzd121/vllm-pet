@@ -1,12 +1,25 @@
 /**
- * poller-service.js — 主进程轮询 vLLM 服务，推导状态并推送 StatusSnapshot。
+ * poller-service.js — 主进程轮询推理服务（vLLM / SGLang），推导状态并推送 StatusSnapshot。
  *
- * 流程：GET <apiBase><healthPath>（失败则 GET <apiBase>/v1/models 兜底判活）
- *      → GET <apiBase><metricsPath> 解析 vllm 指标 → deriveState
+ * 采集链路（依次尝试）：
+ *   1. GET <apiBase><healthPath>（失败则 GET <apiBase>/v1/models 兜底判活）
+ *   2. GET <apiBase><metricsPath> 解析 Prometheus 指标 —— vllm:* / sglang:* 自动识别
+ *   3. 读不到并发指标时（典型：SGLang 没加 --enable-metrics）兜底
+ *      GET <apiBase>/v1/loads?include=core（SGLang ≥ 0.5.8 的负载接口，只取 core 段）
+ *   → deriveState
+ *
+ * 配置 backend 可强制指定引擎：'auto'（默认，自动识别）/ 'vllm' / 'sglang'。
+ * 只有 auto 与 sglang 才走第 3 步（vLLM 没有该接口；auto 下探测失败会退避 60s）。
  */
-import { parsePrometheusMetrics, deriveState, tokenRate } from '../shared/status-core.js'
+import { parsePrometheusMetrics, parseLoadsResponse, deriveState, tokenRate, BACKENDS } from '../shared/status-core.js'
 
 const FETCH_TIMEOUT_MS = 4000
+/** SGLang 负载接口（/get_load 已废弃；不带 include 会返回全部段落） */
+const LOADS_PATH = '/v1/loads?include=core'
+/** 探测到服务不支持 /v1/loads 后，多久再试一次（服务可能中途重启为 SGLang） */
+const LOADS_RETRY_MS = 60_000
+/** 健康但读不到负载指标时给 UI 的短提示（设置面板里有详细说明） */
+const NO_LOAD_HINT = '未读到负载指标'
 
 export class PollerService {
   /**
@@ -19,6 +32,8 @@ export class PollerService {
     this._running = false
     this._everConnected = false
     this._lastGenTokens = null // { value, at }：上一次生成 token counter 采样
+    this._loadsUnsupported = false // 服务不支持 /v1/loads（探过一次就不再每轮都打）
+    this._loadsCheckedAt = 0
   }
 
   start() {
@@ -34,6 +49,9 @@ export class PollerService {
 
   restart() {
     this.stop()
+    // 配置可能换了服务地址/引擎，重新探测负载接口
+    this._loadsUnsupported = false
+    this._lastGenTokens = null
     this.start()
   }
 
@@ -63,6 +81,7 @@ export class PollerService {
     const base = config.apiBase.replace(/\/+$/, '')
     const headers = config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}
     const startedAt = Date.now()
+    const backend = BACKENDS.includes(config.backend) ? config.backend : 'auto'
 
     // 1. 健康检查（/health 失败时用 /v1/models 兜底）
     const netErrs = []
@@ -77,47 +96,77 @@ export class PollerService {
       }
     }
 
-    // 2. 指标（老版本没有 /metrics 时降级为仅存活检测）
+    // 2. 指标（老版本没有 /metrics、SGLang 未开 --enable-metrics 时读不到）
     let metrics = null
     if (healthOk) {
       const res = await tryFetch(base + config.metricsPath, headers)
       if (res?.ok) metrics = parsePrometheusMetrics(await res.text())
     }
 
-    if (healthOk) this._everConnected = true
-    const { state, intensity } = deriveState({ healthOk, metrics }, config.thresholds)
+    // 3. 兜底：SGLang 负载接口（vLLM 没有，指定 vllm 模式时跳过）
+    let load = metrics
+    let loadSource = metrics?.hasConcurrency ? 'metrics' : 'none'
+    if (healthOk && !metrics?.hasConcurrency && backend !== 'vllm') {
+      const fallback = await this._fetchLoads(base, headers)
+      if (fallback) {
+        load = fallback
+        loadSource = 'loads'
+      }
+    }
 
-    // 生成吞吐：两次采样的 counter 差值 / 间隔；首样本或服务重启后无法计算则为 null
+    if (healthOk) this._everConnected = true
+    const { state, intensity } = deriveState({ healthOk, metrics: load }, config.thresholds)
+
+    // 生成吞吐：优先两次采样的 counter 差值；无 counter 时用服务自报吞吐（/v1/loads）
     let tokensPerSec = null
-    if (metrics?.genTokensTotal != null) {
-      const curr = { value: metrics.genTokensTotal, at: Date.now() }
+    if (load?.genTokensTotal != null) {
+      const curr = { value: load.genTokensTotal, at: Date.now() }
       tokensPerSec = tokenRate(this._lastGenTokens, curr)
       this._lastGenTokens = curr
+    } else if (load?.genThroughput != null) {
+      tokensPerSec = load.genThroughput
+      this._lastGenTokens = null
     }
 
     return this._snapshot({
       state: healthOk ? state : this._everConnected ? 'offline' : 'connecting',
       intensity,
-      running: metrics?.running ?? 0,
-      waiting: metrics?.waiting ?? 0,
-      cacheUsage: metrics?.cacheUsage ?? null,
+      backend: load?.backend ?? null,
+      loadSource,
+      running: load?.running ?? 0,
+      waiting: load?.waiting ?? 0,
+      cacheUsage: load?.cacheUsage ?? null,
       tokensPerSec,
       latencyMs: Date.now() - startedAt,
       models,
+      hint: healthOk && loadSource === 'none' ? NO_LOAD_HINT : null,
       error: healthOk ? null : describeNetError(netErrs[0])
     })
+  }
+
+  /** GET /v1/loads?include=core；不支持的服务探一次后退避，避免每轮都打 */
+  async _fetchLoads(base, headers) {
+    if (this._loadsUnsupported && Date.now() - this._loadsCheckedAt < LOADS_RETRY_MS) return null
+    this._loadsCheckedAt = Date.now()
+    const res = await tryFetch(base + LOADS_PATH, headers)
+    const parsed = res?.ok ? parseLoadsResponse(await res.json().catch(() => null)) : null
+    this._loadsUnsupported = !parsed
+    return parsed
   }
 
   _snapshot(patch) {
     return {
       state: 'connecting',
       intensity: 0,
+      backend: null,
+      loadSource: 'none',
       running: 0,
       waiting: 0,
       cacheUsage: null,
       tokensPerSec: null,
       latencyMs: null,
       models: [],
+      hint: null,
       error: null,
       updatedAt: Date.now(),
       ...patch

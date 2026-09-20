@@ -12,6 +12,12 @@ const ANIMATION_OPTIONS = [
   { value: 'busy-3', label: '🔥 狂热（抖动 + 全特效）' }
 ]
 
+const BACKEND_OPTIONS = [
+  { value: 'auto', label: '自动识别（vLLM / SGLang 指标名自动区分）' },
+  { value: 'vllm', label: 'vLLM（vllm:* 指标）' },
+  { value: 'sglang', label: 'SGLang（sglang:* 指标 + /v1/loads 兜底）' }
+]
+
 export class SettingsPanel {
   /**
    * @param {{
@@ -53,8 +59,12 @@ export class SettingsPanel {
       <h3>⚙️ 小V 设置</h3>
 
       <div class="section">🔌 服务连接</div>
-      <label>vLLM 服务地址</label>
-      <input type="text" name="apiBase" placeholder="http://127.0.0.1:8000" value="${esc(config.apiBase)}">
+      <label>推理服务地址</label>
+      <input type="text" name="apiBase" placeholder="http://127.0.0.1:8000（vLLM）/ :30000（SGLang）" value="${esc(config.apiBase)}">
+      <label>推理引擎<span class="section-note">指标名带 vllm:/sglang: 前缀，本来就是自动识别的</span></label>
+      <select name="backend">
+        ${BACKEND_OPTIONS.map((o) => `<option value="${o.value}" ${(config.backend || 'auto') === o.value ? 'selected' : ''}>${o.label}</option>`).join('')}
+      </select>
       <label>API Key（可选）</label>
       <input type="password" name="apiKey" placeholder="留空则不携带鉴权头" value="${esc(config.apiKey)}">
       <label>轮询间隔 (ms)</label>
@@ -108,7 +118,7 @@ export class SettingsPanel {
         <button class="btn-close" type="button">关闭</button>
         <button class="btn-save" type="button">保存并连接</button>
       </div>
-      <div class="hint">读取服务的 /health 与 /metrics（vllm:num_requests_running / waiting、gpu_cache_usage_perc、generation_tokens_total）。右键宠物可随时打开本面板。</div>
+      <div class="hint">读取 /health 与 /metrics：vLLM 认 vllm:* 指标（含新旧 KV cache 名），SGLang 认 sglang:* 指标。SGLang 默认不暴露 /metrics，需启动加 --enable-metrics；没开时自动回退读 /v1/loads（SGLang ≥ 0.5.8），都读不到就只判断在线/离线。右键宠物可随时打开本面板。</div>
     `
     anchorEl.append(el)
     this.el = el
@@ -132,6 +142,7 @@ export class SettingsPanel {
       const patch = {
         apiBase: get('apiBase').value.trim(),
         apiKey: get('apiKey').value.trim(),
+        backend: get('backend').value,
         pollIntervalMs: num('pollIntervalMs', 2000),
         skin: get('skin').value,
         showStatus: get('showStatus').checked,
