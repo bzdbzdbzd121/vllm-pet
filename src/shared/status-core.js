@@ -23,6 +23,11 @@
  *                                    长请求进行中差值恒为 0，不能用来算实时吞吐
  *     sglang:gen_throughput        — 服务自报生成吞吐 tok/s（gauge，counter 算不出时兜底）
  *
+ * ⚠️ SGLang 的 /metrics gauge 是**推送快照**，空闲后会冻结：`num_running_reqs` 在调度器
+ *   转为空闲后会被 30s 的 flush 节流卡住（上游 PR #26495 实测 24 卡了整整 30s），用它判
+ *   "是否还在忙"会多报一段尾巴 → 计数优先取请求时现算的 `/v1/loads`（见 mergeLoads）。
+ *   counter（tok/s / 活动信号）仍取 /metrics。
+ *
  * ⚠️ SGLang 的并发 gauge 看不到正在 prefill 的请求：
  *   `num_running_reqs` = len(scheduler.running_batch.reqs)，而正在 prefill（含 chunked prefill）
  *   的请求被有意排除在 running_batch 之外（scheduler.get_next_batch_to_run() 里
@@ -273,6 +278,33 @@ export function sampleActivity(load, prev = null, at = Date.now()) {
     ? prefillActive || grew(decodeTokens, prev.decodeTokens)
     : grew(usedTokens, prev.usedTokens)
   return { active, prefillActive, sample }
+}
+
+/**
+ * 合并两路采集结果：/v1/loads（实时计数）+ /metrics（counter 与吞吐）。
+ *
+ * 计数（running/waiting/cacheUsage）优先用 /v1/loads——它是请求时现算的实时值；
+ * /metrics 的 gauge 是推送快照，SGLang 空闲后会冻结在最后一批的数值上（上游 PR #26495）。
+ * counter（genTokensTotal / realtimeGenTokensTotal / prefillTokensTotal）与 genThroughput
+ * 仍用 /metrics。任一路为 null 时返回另一路。
+ *
+ * @param {ReturnType<typeof emptyLoad>|null} live parseLoadsResponse 的结果
+ * @param {ReturnType<typeof emptyLoad>|null} metrics parsePrometheusMetrics 的结果
+ * @returns {ReturnType<typeof emptyLoad>|null}
+ */
+export function mergeLoads(live, metrics) {
+  if (!live) return metrics
+  if (!metrics) return live
+  return {
+    ...metrics, // counter / genThroughput：metrics 是唯一来源
+    backend: live.backend ?? metrics.backend,
+    hasConcurrency: true,
+    running: live.running,
+    waiting: live.waiting,
+    cacheUsage: live.cacheUsage ?? metrics.cacheUsage,
+    usedTokensTotal: live.usedTokensTotal ?? metrics.usedTokensTotal,
+    genThroughput: metrics.genThroughput ?? live.genThroughput
+  }
 }
 
 /**

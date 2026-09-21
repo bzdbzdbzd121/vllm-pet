@@ -4,7 +4,7 @@
  *   MockStatusProvider — 浏览器预览：手动推送状态 + localStorage 模拟配置
  *   LiveFetchProvider  — 浏览器"真实直连"：直接 fetch vLLM（受 CORS 限制，仅调试用）
  */
-import { parsePrometheusMetrics, parseLoadsResponse, deriveState, sampleGenerationRate, sampleActivity, DEFAULT_THRESHOLDS } from '../../shared/status-core.js'
+import { parsePrometheusMetrics, parseLoadsResponse, mergeLoads, deriveState, sampleGenerationRate, sampleActivity, DEFAULT_THRESHOLDS } from '../../shared/status-core.js'
 
 export const DEFAULT_CONFIG = Object.freeze({
   apiBase: '',
@@ -179,19 +179,17 @@ export class LiveFetchProvider {
       } catch { /* 老版本可能没有 /metrics，降级为仅存活检测 */ }
     }
 
-    // 兜底：SGLang 未开 --enable-metrics 时用 /v1/loads 取负载（与主进程 poller 同策略）
-    let load = metrics
-    let loadSource = metrics?.hasConcurrency ? 'metrics' : 'none'
-    if (healthOk && !metrics?.hasConcurrency && this.opts.backend !== 'vllm') {
+    // 三、SGLang 实时负载接口（/metrics gauge 会滞后，计数以它为准）
+    let live = null
+    if (healthOk && this.opts.backend !== 'vllm' && metrics?.backend !== 'vllm') {
       try {
         const res = await fetchWithTimeout(base + '/v1/loads?include=core', { headers }, 4000)
-        const parsed = res.ok ? parseLoadsResponse(await res.json().catch(() => null)) : null
-        if (parsed) {
-          load = parsed
-          loadSource = 'loads'
-        }
-      } catch { /* 不是 SGLang 或版本过老：保持"仅存活检测" */ }
+        if (res.ok) live = parseLoadsResponse(await res.json().catch(() => null))
+      } catch { /* 不是 SGLang 或版本过老：保持只用 /metrics */ }
     }
+
+    const load = mergeLoads(live, metrics)
+    const loadSource = live ? 'loads' : metrics?.hasConcurrency ? 'metrics' : 'none'
 
     const wasConnected = this._everConnected
     if (healthOk) this._everConnected = true

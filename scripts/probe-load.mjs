@@ -19,6 +19,7 @@ if (!apiBase) {
 }
 const RAW = rest.includes('--raw')
 
+const BASE = apiBase.replace(/\/+$/, '')
 const poller = new PollerService({
   getConfig: () => ({}),
   onStatus: () => {}
@@ -29,6 +30,21 @@ const config = {
   healthPath: '/health',
   metricsPath: '/metrics',
   pollIntervalMs: 1000
+}
+
+/** 推理服务版本（/server_info 新接口优先，回退 /get_server_info）——排障时先看这个 */
+async function serverVersion() {
+  for (const path of ['/server_info', '/get_server_info']) {
+    try {
+      const res = await fetch(BASE + path, { headers: { connection: 'close' } })
+      if (!res.ok) continue
+      const data = await res.json().catch(() => null)
+      const version = data?.version || data?.sglang_version
+      const model = data?.model_path || data?.served_model_name
+      if (version) return `${version}${model ? `（${model}）` : ''} 来自 ${path}`
+    } catch { /* 换下一个接口 */ }
+  }
+  return '未知（/server_info 与 /get_server_info 都不可用）'
 }
 
 /** 与 poller 内部一致：先看 /metrics 是否认得，再看 /v1/loads 是否可用 */
@@ -63,7 +79,8 @@ const fmt = (s) => [
   `error=${s.error || '-'}`
 ].join('  ')
 
-console.log(`[probe] apiBase=${apiBase} backend=${backend}`)
+console.log(`[probe] apiBase=${BASE} backend=${backend}`)
+console.log(`[probe] 服务版本：${await serverVersion()}`)
 console.log(`[probe] 第 1 次：${fmt(snap)}  （首次采样只能用服务自报吞吐）`)
 console.log(`[probe] 第 2 次：${fmt(second)}`)
 console.log(`[probe] ---------------- 分项探测 ----------------`)
@@ -79,6 +96,15 @@ if (second.state === 'busy' && !(second.tokensPerSec > 0) && !second.prefillActi
   console.log('[probe] 应有 sglang:realtime_tokens_total{mode="decode"} 或 sglang:gen_throughput 兜底（见上方分项探测）。')
 }
 if (second.prefillActive) {
-  console.log('[probe] prefillActive=true：正在 prefill（SGLang 此时并发 gauge 为 0，属正常），')
-  console.log('[probe] 桌宠会显示"预填充中"而不是"空闲中"。')
+  console.log('[probe] prefillActive=true：正在 prefill（SGLang 此时并发为 0 属正常），')
+  console.log('[probe] 桌宠会显示"推理中"（不带计数）而不是"空闲中"。')
+}
+if (second.prefillActive && second.state === 'idle' && second.loadSource === 'metrics') {
+  console.log('[probe] ⚠️ 正在 prefill 但判成了 idle：说明既没有实时 counter 也没有 /v1/loads，')
+  console.log('[probe]    建议 SGLang >= 0.5.8（提供 /v1/loads）或启动加 --enable-metrics。')
+}
+if (second.loadSource === 'metrics' && second.backend === 'sglang') {
+  console.log('[probe] ⚠️ 并发数来自 /metrics gauge（推送快照）：SGLang 空闲后它会冻结在最后一批的')
+  console.log('[probe]    数值上（上游 PR #26495，实测最长 30s），可能让桌宠多报一段"忙碌"。')
+  console.log('[probe]    升级到 SGLang >= 0.5.8 后会优先用 /v1/loads 的实时值（loadSource=loads）。')
 }

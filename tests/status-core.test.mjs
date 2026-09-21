@@ -7,6 +7,7 @@ import {
   tokenRate,
   sampleGenerationRate,
   sampleActivity,
+  mergeLoads,
   DEFAULT_THRESHOLDS
 } from '../src/shared/status-core.js'
 
@@ -412,4 +413,35 @@ test('deriveState: gauge 为 0 但在推进 → busy（prefill 阶段不再误�
   assert.deepEqual(deriveState({ healthOk: true, metrics, active: false }), { state: 'idle', intensity: 0 })
   // 并发确实为 0 且无活动 → 空闲
   assert.deepEqual(deriveState({ healthOk: true, metrics }), { state: 'idle', intensity: 0 })
+})
+
+test('mergeLoads: 计数用实时 /v1/loads，counter/tok-s 仍用 /metrics', () => {
+  const metrics = {
+    backend: 'sglang', hasConcurrency: true, running: 8, waiting: 0, cacheUsage: 0.4,
+    promptTokensTotal: 100, genTokensTotal: 700, realtimeGenTokensTotal: 500,
+    prefillTokensTotal: 900, usedTokensTotal: 3000, genThroughput: 42
+  }
+  const live = {
+    backend: 'sglang', hasConcurrency: true, running: 0, waiting: 0, cacheUsage: 0.4,
+    promptTokensTotal: null, genTokensTotal: null, realtimeGenTokensTotal: null,
+    prefillTokensTotal: null, usedTokensTotal: 3000, genThroughput: 0
+  }
+  const merged = mergeLoads(live, metrics)
+  assert.equal(merged.running, 0) // 计数取实时值（gauge 冻结在 8 也无所谓）
+  assert.equal(merged.waiting, 0)
+  assert.equal(merged.cacheUsage, 0.4)
+  assert.equal(merged.genTokensTotal, 700) // counter 仍来自 metrics
+  assert.equal(merged.realtimeGenTokensTotal, 500)
+  assert.equal(merged.prefillTokensTotal, 900)
+  assert.equal(merged.genThroughput, 42)
+  assert.equal(merged.backend, 'sglang')
+  assert.equal(merged.hasConcurrency, true)
+})
+
+test('mergeLoads: 只有一路数据时直接返回那一路', () => {
+  const metrics = { running: 3, waiting: 0, cacheUsage: null, hasConcurrency: true, backend: 'vllm' }
+  const live = { running: 0, waiting: 0, cacheUsage: 0.2, hasConcurrency: true, backend: 'sglang' }
+  assert.deepEqual(mergeLoads(null, metrics), metrics)
+  assert.deepEqual(mergeLoads(live, null), live)
+  assert.equal(mergeLoads(null, null), null)
 })

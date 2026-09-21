@@ -1,7 +1,7 @@
 /**
  * state-machine.js — 把 StatusSnapshot 流映射为桌宠视觉状态。
  *
- * StatusSnapshot: { state, intensity, backend, loadSource, prefillActive, running, waiting, cacheUsage,
+ * StatusSnapshot: { state, intensity, backend, loadSource, prefillActive（仅排障用）, running, waiting, cacheUsage,
  *                   tokensPerSec, latencyMs, models, hint, error, updatedAt }
  * 视觉状态: 'idle' | 'sleeping' | 'connecting' | 'busy-1..3' | 'offline'
  */
@@ -121,11 +121,11 @@ export function formatStatusLine(snap, { showKvCache = true } = {}) {
       return snap.error || '连接中…'
     case 'busy': {
       // 段内用不换行空格：换行只发生在 · 分隔处，避免 "KV / 91%" 这种难看断行
-      // running 由 SGLang 的 running_batch 统计：正在 prefill（含 chunked prefill）的请求不计入，
-      // 此时并发为 0 但确实在推理，用 prefillActive 换成"预填充中"，避免出现"推理中 ×0"
+      // 不区分 prefill / decode：统一显示"推理中 ×N"。SGLang 正在 prefill 时并发读不到
+      // （running_batch 为空，见 status-core 注释），此时省略计数，避免出现"推理中 ×0"
       const parts = [snap.running > 0
         ? `推理中 ×${snap.running}`
-        : snap.prefillActive ? '预填充中' : '推理中']
+        : '推理中']
       if (snap.waiting) parts.push(`队列 ${snap.waiting}`)
       if (snap.tokensPerSec > 0) parts.push(`${formatTps(snap.tokensPerSec)} tok/s`) // 0 / null 不显示
       if (showKvCache && snap.cacheUsage != null) parts.push(`KV ${Math.round(snap.cacheUsage * 100)}%`)

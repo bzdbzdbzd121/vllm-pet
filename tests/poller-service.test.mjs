@@ -144,7 +144,7 @@ test('poller: 指定 vllm 模式时不去试探 /v1/loads，降级为仅存活�
   }
 })
 
-test('poller: 读到 sglang:* 指标时不走兜底，tok/s 由 realtime counter 差值算出', async () => {
+test('poller: SGLang 计数取实时 /v1/loads，tok/s 仍由 /metrics 的 realtime counter 算', async () => {
   let realtimeGenTotal = 1000
   const fake = await startFakeServer({
     '/health': (_req, res) => res.writeHead(200).end('ok'),
@@ -155,14 +155,15 @@ test('poller: 读到 sglang:* 指标时不走兜底，tok/s 由 realtime counter
     const poller = new PollerService({ getConfig: () => ({}), onStatus: () => {} })
     const cfg = pollConfig(fake.base)
     const first = await poller._poll(cfg)
-    assert.equal(first.loadSource, 'metrics')
+    assert.equal(first.loadSource, 'loads') // 计数以实时接口为准
     assert.equal(first.backend, 'sglang')
     assert.equal(first.state, 'busy')
-    assert.equal(first.tokensPerSec, 7) // 首样本算不出差值 → 退到 gen_throughput
+    assert.equal(first.running, 9)
+    assert.equal(first.tokensPerSec, 7) // 首样本算不出差值 → /metrics 的 gen_throughput 兜底
     realtimeGenTotal += 420
     const second = await poller._poll(cfg)
     assert.ok(second.tokensPerSec > 1000, `应由 realtime counter 差值算出（远大于 gen_throughput=7），实际 ${second.tokensPerSec}`)
-    assert.equal(fake.hits['/v1/loads'], undefined)
+    assert.equal(fake.hits['/metrics'], 2) // counter 每轮都取自 /metrics
   } finally {
     await fake.close()
   }
@@ -314,6 +315,74 @@ test('poller: 真空闲不能被误判成忙碌（计数/gauge 全持平）', as
     const snap = await poller._poll(cfg)
     assert.equal(snap.state, 'idle')
     assert.equal(snap.prefillActive, false)
+  } finally {
+    await fake.close()
+  }
+})
+
+test('poller: gauge 冻结在旧值、/v1/loads 报 0 → 必须判空闲（复现"不回空闲中"）', async () => {
+  // SGLang 上游 PR #26495：调度器空闲后 num_running_reqs 会冻结在最后一批的数值上（实测 30s），
+  // 此时 /metrics 一直报 8，而 /v1/loads 是请求时现算的 0
+  const fake = await startFakeServer({
+    '/health': (_req, res) => res.writeHead(200).end('ok'),
+    '/metrics': (req, res) => sglangMetrics({
+      running: 8, waiting: 0, cache: 0.4, genTotal: 700, realtimeGenTotal: 500, prefillTokens: 900
+    })(req, res),
+    '/v1/loads': (req, res) => sglangLoads(0, 0, 0.4, 0, 3000)(req, res) // 实时值：真的空闲
+  })
+  try {
+    const poller = new PollerService({ getConfig: () => ({}), onStatus: () => {} })
+    const cfg = pollConfig(fake.base)
+    await poller._poll(cfg)
+    const snap = await poller._poll(cfg)
+    assert.equal(snap.loadSource, 'loads') // 计数取自实时接口
+    assert.equal(snap.running, 0)
+    assert.equal(snap.state, 'idle') // ← 修复点：以前会被冻结的 gauge 拖着一直"忙碌"
+  } finally {
+    await fake.close()
+  }
+})
+
+test('poller: gauge 冻结但服务确实在忙时（/v1/loads 也忙）仍是忙碌', async () => {
+  const fake = await startFakeServer({
+    '/health': (_req, res) => res.writeHead(200).end('ok'),
+    '/metrics': (req, res) => sglangMetrics({
+      running: 8, waiting: 0, cache: 0.4, genTotal: 700, realtimeGenTotal: 500, prefillTokens: 900
+    })(req, res),
+    '/v1/loads': (req, res) => sglangLoads(5, 1, 0.6, 88, 9000)(req, res)
+  })
+  try {
+    const poller = new PollerService({ getConfig: () => ({}), onStatus: () => {} })
+    const cfg = pollConfig(fake.base)
+    await poller._poll(cfg)
+    const snap = await poller._poll(cfg)
+    assert.equal(snap.running, 5) // 以 /v1/loads 为准
+    assert.equal(snap.waiting, 1)
+    assert.equal(snap.cacheUsage, 0.6)
+    assert.equal(snap.state, 'busy')
+    assert.equal(snap.intensity, 2)
+    assert.equal(snap.tokensPerSec > 0, true) // counter 仍来自 /metrics
+  } finally {
+    await fake.close()
+  }
+})
+
+test('poller: 只有 /metrics（无 /v1/loads）时计数回落到 gauge', async () => {
+  const fake = await startFakeServer({
+    '/health': (_req, res) => res.writeHead(200).end('ok'),
+    '/metrics': (req, res) => sglangMetrics({
+      running: 3, waiting: 0, cache: 0.4, genTotal: 700, realtimeGenTotal: 500, prefillTokens: 900
+    })(req, res)
+    // /v1/loads 未注册 → 404
+  })
+  try {
+    const poller = new PollerService({ getConfig: () => ({}), onStatus: () => {} })
+    const cfg = pollConfig(fake.base)
+    await poller._poll(cfg)
+    const snap = await poller._poll(cfg)
+    assert.equal(snap.loadSource, 'metrics')
+    assert.equal(snap.running, 3)
+    assert.equal(snap.state, 'busy')
   } finally {
     await fake.close()
   }

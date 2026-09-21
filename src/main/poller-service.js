@@ -4,14 +4,14 @@
  * 采集链路（依次尝试）：
  *   1. GET <apiBase><healthPath>（失败则 GET <apiBase>/v1/models 兜底判活）
  *   2. GET <apiBase><metricsPath> 解析 Prometheus 指标 —— vllm:* / sglang:* 自动识别
- *   3. 读不到并发指标时（典型：SGLang 没加 --enable-metrics）兜底
- *      GET <apiBase>/v1/loads?include=core（SGLang ≥ 0.5.8 的负载接口，只取 core 段）
+ *   3. SGLang：GET /v1/loads?include=core 取**实时**并发数（SGLang ≥ 0.5.8）
+ *      —— /metrics 的 gauge 是推送快照，空闲后会冻结（上游 PR #26495），所以计数以它为准
  *   → deriveState
  *
  * 配置 backend 可强制指定引擎：'auto'（默认，自动识别）/ 'vllm' / 'sglang'。
  * 只有 auto 与 sglang 才走第 3 步（vLLM 没有该接口；auto 下探测失败会退避 60s）。
  */
-import { parsePrometheusMetrics, parseLoadsResponse, deriveState, sampleGenerationRate, sampleActivity, BACKENDS } from '../shared/status-core.js'
+import { parsePrometheusMetrics, parseLoadsResponse, mergeLoads, deriveState, sampleGenerationRate, sampleActivity, BACKENDS } from '../shared/status-core.js'
 
 const FETCH_TIMEOUT_MS = 4000
 /** SGLang 负载接口（/get_load 已废弃；不带 include 会返回全部段落） */
@@ -98,23 +98,23 @@ export class PollerService {
       }
     }
 
-    // 2. 指标（老版本没有 /metrics、SGLang 未开 --enable-metrics 时读不到）
+    // 2. 指标：counter（tok/s、活动信号）与 gauge
     let metrics = null
     if (healthOk) {
       const res = await tryFetch(base + config.metricsPath, headers)
       if (res?.ok) metrics = parsePrometheusMetrics(await res.text())
     }
 
-    // 3. 兜底：SGLang 负载接口（vLLM 没有，指定 vllm 模式时跳过）
-    let load = metrics
-    let loadSource = metrics?.hasConcurrency ? 'metrics' : 'none'
-    if (healthOk && !metrics?.hasConcurrency && backend !== 'vllm') {
-      const fallback = await this._fetchLoads(base, headers)
-      if (fallback) {
-        load = fallback
-        loadSource = 'loads'
-      }
+    // 3. SGLang 的实时负载接口：/metrics 的 gauge 是推送快照，空闲后会冻结在最后一批的数值上
+    //    （上游 PR #26495 实测卡 30s）→ 计数优先用现算的 /v1/loads，counter 仍用 /metrics。
+    //    vLLM 没有这个接口，直接跳过。
+    let live = null
+    if (healthOk && backend !== 'vllm' && metrics?.backend !== 'vllm') {
+      live = await this._fetchLoads(base, headers)
     }
+
+    const load = mergeLoads(live, metrics)
+    const loadSource = live ? 'loads' : metrics?.hasConcurrency ? 'metrics' : 'none'
 
     if (healthOk) this._everConnected = true
 

@@ -11,6 +11,10 @@
  *   node scripts/mock-vllm.mjs --backend sglang --no-metrics
  *                                                       # 模拟 SGLang 未加 --enable-metrics：
  *                                                       # /metrics 返回 404，桌宠应回退 /v1/loads
+ *   node scripts/mock-vllm.mjs --backend sglang --stale-gauge 8
+ *                                                       # 模拟 gauge 冻结：/metrics 永远报
+ *                                                       # running=8，/v1/loads 报真实值 0
+ *                                                       # （桌宠应以 /v1/loads 为准 → 空闲）
  *   node scripts/mock-vllm.mjs --prefill                # 模拟长 prompt 的 chunked prefill：
  *                                                       # 并发 gauge 恒为 0（SGLang 盲区），
  *                                                       # 但 prefill/KV 在增长 —— 桌宠应显示"预填充中"而非"空闲中"
@@ -41,6 +45,12 @@ const NO_METRICS = args.includes('--no-metrics')
  */
 const PREFILL = args.includes('--prefill')
 const PREFILL_TPS = argNum('prefill-tps', 1200) // 每个 poll 间隔推进的 prefill token 量
+/**
+ * 模拟 SGLang 的"gauge 冻结"：调度器空闲后 num_running_reqs 会卡在最后一批的数值上
+ * （上游 PR #26495 实测最长 30s，因为空闲路径的指标 flush 被 30s 节流）。
+ * 此时 /metrics 一直报 --stale-gauge 给的旧值，而 /v1/loads（请求时现算）报真实值 0。
+ */
+const STALE_GAUGE = args.includes('--stale-gauge') ? argNum('stale-gauge', 8) : null
 
 const PHASES = [
   { name: 'idle', running: 0, waiting: 0, cache: 0.28 },
@@ -62,6 +72,12 @@ function current() {
   const phase = CYCLE ? PHASES[phaseIndex] : { name: 'fixed', ...fixed }
   // SGLang 的盲区：正在 prefill 的请求不在 running_batch / waiting_queue 里
   return PREFILL ? { ...phase, running: 0, waiting: 0 } : phase
+}
+
+/** /metrics 侧（推送快照，可能冻结）：--stale-gauge 时永远报旧值；/v1/loads 侧用 current() */
+function gauges() {
+  const phase = current()
+  return STALE_GAUGE == null ? phase : { ...phase, running: STALE_GAUGE, waiting: 0 }
 }
 
 // token counters——两组语义要区分（真实 SGLang 就是这样）：
@@ -207,15 +223,21 @@ const server = http.createServer((req, res) => {
   } else if (path === '/v1/models') {
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ object: 'list', data: [{ id: MODEL, object: 'model' }] }))
+  } else if (path === '/server_info' || path === '/get_server_info') {
+    // 供 probe-load.mjs 打印服务版本（真实 SGLang 这两个接口都带 version 字段）
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ model_path: MODEL, served_model_name: MODEL, version: '0.5.20-mock' }))
   } else if (path === '/metrics') {
     if (NO_METRICS) {
       res.writeHead(404, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ detail: 'Not Found' }))
       return
     }
+    const g = gauges()
+    // token/counter 只随**真实**工作量推进：gauge 冻结时它不能跟着动（真实 SGLang 空闲即不动）
     advanceTokens(running)
     res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' })
-    res.end(BACKEND === 'sglang' ? sglangMetrics({ running, waiting, cache }) : vllmMetrics({ running, waiting, cache }))
+    res.end(BACKEND === 'sglang' ? sglangMetrics(g) : vllmMetrics(g))
   } else if (path === '/v1/loads') {
     if (BACKEND !== 'sglang') {
       res.writeHead(404).end('not found')
@@ -233,5 +255,6 @@ server.listen(PORT, () => {
   const metrics = NO_METRICS ? '/metrics(404)' : '/metrics'
   const loads = BACKEND === 'sglang' ? ' /v1/loads' : ''
   const prefill = PREFILL ? ' --prefill 模拟 chunked prefill（并发 gauge 恒为 0，prefill/KV 仍在增长）' : ''
-  console.log(`[mock-vllm] http://127.0.0.1:${PORT}  backend=${BACKEND} (health /v1/models ${metrics}${loads})${CYCLE ? ' --cycle 每 8s 换档' : ''}${prefill}`)
+  const stale = STALE_GAUGE != null ? ` --stale-gauge ${STALE_GAUGE} 模拟 gauge 冻结（/metrics 永远报旧值，/v1/loads 报真实值）` : ''
+  console.log(`[mock-vllm] http://127.0.0.1:${PORT}  backend=${BACKEND} (health /v1/models ${metrics}${loads})${CYCLE ? ' --cycle 每 8s 换档' : ''}${prefill}${stale}`)
 })

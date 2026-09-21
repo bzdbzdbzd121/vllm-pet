@@ -29,11 +29,13 @@ sglang serv ┘         src/main/poller-service.js                       state-m
 1. `GET <apiBase><healthPath>` 判活；失败时 `GET /v1/models` 兜底（顺带取模型名）
 2. `GET <apiBase><metricsPath>` → `parsePrometheusMetrics`：`vllm:*` 与 `sglang:*` 两族指标名
    一起认（按前缀区分，多 rank 求和，见 §3.6）
-3. 没读到并发指标时（典型：SGLang 没加 `--enable-metrics`）兜底
-   `GET /v1/loads?include=core`（SGLang ≥ 0.5.8）→ `parseLoadsResponse`；
-   探测失败后 60s 内不再重试（`_loadsUnsupported` 退避），`backend='vllm'` 时直接跳过
-4. `deriveState` 推导状态；快照附 `backend`（认出的引擎）、`loadSource`（metrics/loads/none）、
-   `hint`（无负载数据时给 UI 的短提示）
+3. SGLang 再取 `GET /v1/loads?include=core`（≥ 0.5.8）→ `parseLoadsResponse`，用 `mergeLoads()`
+   合成：**计数（running/waiting/cacheUsage）用这份实时值**，counter 与 genThroughput 仍用 /metrics
+   —— 因为 Prometheus gauge 空闲后会冻结（§4.10）；探测失败/404 后 60s 内不再重试
+   （`_loadsUnsupported` 退避），`backend='vllm'` 或 /metrics 已认出 vLLM 时直接跳过
+4. `sampleActivity()` 判"是否在推进"（prefill 盲区，§4.9）、`sampleGenerationRate()` 算 tok/s，
+   再 `deriveState({ active })` 推导状态；快照附 `backend`（认出的引擎）、
+   `loadSource`（loads/metrics/none，表示**计数**来自哪）、`prefillActive`、`hint`
 
 **三层状态模型，改代码时务必分清：**
 
@@ -68,11 +70,11 @@ src/renderer/status/state-machine.js  快照 → 视觉状态（含 stateMap、�
 src/renderer/status/providers.js      IPC / Mock / 浏览器直连三种状态来源 + 默认配置
 src/renderer/ui/settings-panel.js     浏览器模式下的内嵌设置气泡
 src/renderer/skins/         皮肤加载器 + 内置皮肤（default-robot + 4 款换色）
-scripts/mock-vllm.mjs       假推理服务（--backend vllm|sglang、--no-metrics、--prefill、--port/--running/--waiting/--cache/--cycle）
+scripts/mock-vllm.mjs       假推理服务（--backend vllm|sglang、--no-metrics、--prefill、--stale-gauge N、--port/--running/--waiting/--cache/--cycle）
 scripts/probe-load.mjs      排障用：打印某地址的采集结果（状态/引擎/数据来源/逐项 HTTP 码）
 scripts/smoke.mjs           集成冒烟（隐藏窗口 + 截图，见 §5）
 scripts/dev-desktop.mjs     vite dev server + Electron 热更新联调
-tests/*.test.mjs            node --test，76 个用例
+tests/*.test.mjs            node --test，81 个用例
 ```
 
 ## 3. 关键设计决策（勿轻易推翻）
@@ -108,6 +110,9 @@ tests/*.test.mjs            node --test，76 个用例
 7. **读不到负载指标时不能断言"空闲"**：健康但无负载数据（SGLang 未开 `--enable-metrics`
    且 `/v1/loads` 也不行）时状态仍是 idle，因此快照带 `hint`，UI 会显示
    `空闲中（未读到负载指标）`；新增后端时保持这个降级语义，不要静默假装一切正常。
+8. **计数只取"现算"的来源，不取推送快照**：SGLang 的 Prometheus gauge 空闲后会冻结（§4.10），
+   所以 running/waiting/KV 以 `/v1/loads`（请求时现算）为准，`/metrics` 只提供 counter 与吞吐。
+   新增后端时先分清：这个数字是"请求时现算"还是"最后一次推送"？后者不能用来判断"现在忙不忙"。
 
 ## 4. ⚠️ 排坑指南（都踩过，别再踩）
 
@@ -149,6 +154,12 @@ tests/*.test.mjs            node --test，76 个用例
    注意 `decode_log_interval` 默认 40：并发 gauge 每 40 个 decode 迭代才刷新一次，
    短短几十 token 的生成也可能整段看不到，这就是为什么 decode 计数也纳入活动信号。
 
+10. **SGLang 的 Prometheus gauge 空闲后会冻结**（症状：服务已经空了，桌宠还停在"推理中"一段）：
+   `/metrics` 是推送式，`num_running_reqs = len(batch.reqs)` 在**过滤掉已完成请求之前**就打了，
+   而空闲路径 `_maybe_log_idle_metrics()` 把所有 emit 节流到 30s 一次——于是最后一批的数值会原样
+   卡住（上游 PR #26495 实测 `24` 卡了整整 30s；另有更早的 `--metrics-flush-interval` PR #4285）。
+   对策就是我们不用它判忙闲：计数取 `/v1/loads`（请求时现算），见 `mergeLoads()` 与 §3.8。
+   注意 SGLang < 0.5.8 没有 `/v1/loads`，只能吃这个滞后（probe 会提示）。
 ## 5. 验证工作流（提交前必做）
 
 ```bash
@@ -198,6 +209,18 @@ sleep 1
 node scripts/probe-load.mjs http://127.0.0.1:18105 auto   # 第 2 次采样 → busy/prefillActive=true
 node scripts/probe-load.mjs http://127.0.0.1:18106 auto   # 同上，只是走 /v1/loads 兜底
 node scripts/probe-load.mjs http://127.0.0.1:18107 auto   # 真空闲 → 必须保持 idle（防误报）
+pkill -f "mock-vllm.mjs --port 181"
+```
+
+**gauge 冻结专项验证**（改 `mergeLoads` / 计数来源后必跑）：
+
+```bash
+# --stale-gauge：/metrics 永远报 running=8（模拟冻结），/v1/loads 报实时值
+node scripts/mock-vllm.mjs --port 18108 --backend sglang --stale-gauge 8 --running 0 --waiting 0 &
+node scripts/mock-vllm.mjs --port 18109 --backend sglang --stale-gauge 8 --running 6 --waiting 1 &
+sleep 1
+node scripts/probe-load.mjs http://127.0.0.1:18108 auto   # 应 idle（不信冻结的 8）
+node scripts/probe-load.mjs http://127.0.0.1:18109 auto   # 应 busy 且 running=6（实时值）
 pkill -f "mock-vllm.mjs --port 181"
 ```
 
