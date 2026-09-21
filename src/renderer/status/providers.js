@@ -124,6 +124,7 @@ export class LiveFetchProvider {
     this._everConnected = false
     this._lastGenSample = null
     this._lastActivity = null
+    this._readyUnsupported = false
   }
 
   start(onStatus) {
@@ -152,8 +153,19 @@ export class LiveFetchProvider {
     let models = []
     let error = null
     try {
-      const res = await fetchWithTimeout(base + this.opts.healthPath, { headers }, 4000)
-      healthOk = res.ok
+      // 默认 healthPath 时优先 SGLang 的非生成式 /ready（/health 默认会真生成 1 个 token）
+      if (this.opts.healthPath === '/health' && !this._readyUnsupported) {
+        const readyRes = await fetchWithTimeout(base + '/ready', { headers }, 4000)
+        if (readyRes.status === 404 || readyRes.status === 405) {
+          this._readyUnsupported = true
+        } else {
+          healthOk = readyRes.ok
+        }
+      }
+      if (!healthOk && (this._readyUnsupported || this.opts.healthPath !== '/health')) {
+        const res = await fetchWithTimeout(base + this.opts.healthPath, { headers }, 4000)
+        healthOk = res.ok
+      }
     } catch (e) {
       error = friendlyFetchError(e)
     }

@@ -26,7 +26,8 @@ sglang serv ┘         src/main/poller-service.js                       state-m
 
 **采集链路（poller-service.js `_poll`，配置 `backend` = auto/vllm/sglang）**：
 
-1. `GET <apiBase><healthPath>` 判活；失败时 `GET /v1/models` 兜底（顺带取模型名）
+1. 判活：`healthPath` 保持默认 `/health` 时**先打 SGLang 的非生成式 `/ready`**（`/health` 默认会
+   真生成 1 个 token，见 §4.11），404/405 才回落 `<healthPath>`；都失败时 `GET /v1/models` 兜底
 2. `GET <apiBase><metricsPath>` → `parsePrometheusMetrics`：`vllm:*` 与 `sglang:*` 两族指标名
    一起认（按前缀区分，多 rank 求和，见 §3.6）
 3. SGLang 再取 `GET /v1/loads?include=core`（≥ 0.5.8）→ `parseLoadsResponse`，用 `mergeLoads()`
@@ -70,11 +71,11 @@ src/renderer/status/state-machine.js  快照 → 视觉状态（含 stateMap、�
 src/renderer/status/providers.js      IPC / Mock / 浏览器直连三种状态来源 + 默认配置
 src/renderer/ui/settings-panel.js     浏览器模式下的内嵌设置气泡
 src/renderer/skins/         皮肤加载器 + 内置皮肤（default-robot + 4 款换色）
-scripts/mock-vllm.mjs       假推理服务（--backend vllm|sglang、--no-metrics、--prefill、--stale-gauge N、--port/--running/--waiting/--cache/--cycle）
+scripts/mock-vllm.mjs       假推理服务（--backend vllm|sglang、--no-metrics、--prefill、--stale-gauge N、--health-generates、--no-ready、--port/--running/--waiting/--cache/--cycle）
 scripts/probe-load.mjs      排障用：打印某地址的采集结果（状态/引擎/数据来源/逐项 HTTP 码）
 scripts/smoke.mjs           集成冒烟（隐藏窗口 + 截图，见 §5）
 scripts/dev-desktop.mjs     vite dev server + Electron 热更新联调
-tests/*.test.mjs            node --test，81 个用例
+tests/*.test.mjs            node --test，87 个用例
 ```
 
 ## 3. 关键设计决策（勿轻易推翻）
@@ -160,7 +161,36 @@ tests/*.test.mjs            node --test，81 个用例
    卡住（上游 PR #26495 实测 `24` 卡了整整 30s；另有更早的 `--metrics-flush-interval` PR #4285）。
    对策就是我们不用它判忙闲：计数取 `/v1/loads`（请求时现算），见 `mergeLoads()` 与 §3.8。
    注意 SGLang < 0.5.8 没有 `/v1/loads`，只能吃这个滞后（probe 会提示）。
+
+11. **别让监测端把服务喂成"在推理"**：SGLang 的 `/health` 默认**会真生成 1 个 token**
+   （`SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION` 默认 `True`，`http_server.py` 里只有关掉它才直接
+   返回 200；而且 `is_fully_idle()` 时才会真跑，正是我们的空闲场景）。轮询每 2s 探一次
+   ＝ 0.5 tok/s 的连续 decode 计数增长 → 活动信号判"在忙" → 症状是"空闲时还显示推理中 0.5 tok/s"，
+   同时白烧显卡。两道防线：① `healthPath` 为默认值时优先用非生成式 `/ready`
+   （404/405 才回落 healthPath，`_readyUnsupported` 只探一次）；② 活动判定要过
+   `ACTIVITY_MIN_TOKENS_PER_SEC`（5 token/s）的速率门槛，滤掉 1 token 级抖动。
+   复现：`node scripts/mock-vllm.mjs --backend sglang --health-generates [--no-ready]`。
+
 ## 5. 验证工作流（提交前必做）
+
+11. **别让监测端把服务喂成"在推理"**：SGLang 的 `/health` 默认**会真生成 1 个 token**
+   （`SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION` 默认 `True`，`http_server.py` 里只有关掉它才直接
+   返回 200；而且 `is_fully_idle()` 时才会真跑，正好是我们的空闲场景）。轮询每 2s 探一次
+   ＝ 0.5 tok/s 的连续 decode 计数增长 → 活动信号判"在忙" → 症状是"空闲时还显示推理中 0.5 tok/s"，
+   同时白烧显卡。两道防线：① `healthPath` 为默认值时优先用非生成式 `/ready`
+   （404/405 才回落 healthPath，`_readyUnsupported` 只探一次）；② 活动判定要过
+   `ACTIVITY_MIN_TOKENS_PER_SEC`（5 token/s）的速率门槛，滤掉 1 token 级抖动。
+   复现：`node scripts/mock-vllm.mjs --backend sglang --health-generates [--no-ready]`。
+9. **SGLang 并发 gauge 有 prefill 盲区**（典型症状：长 prompt 的 prefill 阶段显示"空闲"）：
+   `num_running_reqs = len(scheduler.running_batch.reqs)`，而 `get_next_batch_to_run()` 里
+   `chunked_req_to_exclude.add(self.chunked_req)` 的注释写着 "Move the chunked request out of
+   the batch so that we can merge only finished requests to running_batch"——正在 prefill 的请求
+   被故意排除在 `running_batch` 之外，也不在 `waiting_queue`（它在 `self.chunked_req` 里）。
+   `/v1/loads` 的 `num_running_reqs` 同样是 `len(running_batch.reqs)`，同样中招。
+   所以 **`running + waiting == 0` 不能直接当空闲**，必须配合 `sampleActivity()` 的 `active`
+   （prefill 每次迭代都累加的 counter、decode 迭代计数、以及 KV 占用增长）。
+   注意 `decode_log_interval` 默认 40：并发 gauge 每 40 个 decode 迭代才刷新一次，
+   短短几十 token 的生成也可能整段看不到，这就是为什么 decode 计数也纳入活动信号。
 
 ```bash
 npm test          # ① 单元测试（status-core 解析/推导 + state-machine 映射/睡觉/庆祝）

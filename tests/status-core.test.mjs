@@ -445,3 +445,26 @@ test('mergeLoads: 只有一路数据时直接返回那一路', () => {
   assert.deepEqual(mergeLoads(live, null), live)
   assert.equal(mergeLoads(null, null), null)
 })
+
+test('sampleActivity: 1 token 级抖动不算活动（自己的 /health 生成、keepalive）', () => {
+  const prev = { prefillTokens: 900, decodeTokens: 500, usedTokens: 3000, at: 0 }
+  // 2s 只多了 1 个 token → 0.5 tok/s：低于阈值（正是 SGLang /health 默认生成 1 token 的量级）
+  assert.equal(sampleActivity(
+    { prefillTokensTotal: 900, realtimeGenTokensTotal: 501, usedTokensTotal: 3001 }, prev, 2000
+  ).active, false)
+  // 2s 多了 40 个 token → 20 tok/s：算在推理
+  assert.equal(sampleActivity(
+    { prefillTokensTotal: 900, realtimeGenTokensTotal: 540, usedTokensTotal: 3040 }, prev, 2000
+  ).active, true)
+  // 无 counter 时（/v1/loads）用 KV 占用增长率，同样要过阈值
+  const gaugePrev = { prefillTokens: null, decodeTokens: null, usedTokens: 3000, at: 0 }
+  assert.equal(sampleActivity({ usedTokensTotal: 3001 }, gaugePrev, 2000).active, false)
+  assert.equal(sampleActivity({ usedTokensTotal: 9000 }, gaugePrev, 2000).active, true)
+})
+
+test('sampleActivity: prefill 速率远高于阈值时照旧判活动', () => {
+  const prev = { prefillTokens: 1000, decodeTokens: 0, usedTokens: 0, at: 0 }
+  const { active, prefillActive } = sampleActivity({ prefillTokensTotal: 9000, realtimeGenTokensTotal: 0 }, prev, 2000)
+  assert.equal(active, true) // 4000 tok/s
+  assert.equal(prefillActive, true)
+})

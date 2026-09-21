@@ -55,6 +55,15 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
 export const BACKENDS = Object.freeze(['auto', 'vllm', 'sglang'])
 
 /**
+ * 活动判定所需的最小推进速率（token/s）。
+ * 用来滤掉 1 token 级的抖动：SGLang 的 `/health` 默认会真生成 1 个 token
+ * （`SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION` 默认 True），每 2s 探一次就是 0.5 tok/s——
+ * 这种量级不能算"在推理"，否则监测工具会把自己的健康检查喂成永久的忙碌状态。
+ * 真正的 prefill（chunked prefill 每轮上千 token）与正常 decode 都远高于它。
+ */
+export const ACTIVITY_MIN_TOKENS_PER_SEC = 5
+
+/**
  * 指标名 → 字段映射。
  * kind: 'sum'     跨 label 求和（并发数、吞吐）
  *       'max'     跨 label 取最大（比率类，不该相加）
@@ -257,6 +266,9 @@ export function sampleGenerationRate(load, prev = null, at = Date.now()) {
  *   3. usedTokensTotal（KV 池占用）——没有 counter 时（未开 --enable-metrics 走 /v1/loads）
  *      唯一可用信号；不做为主信号是因为它是 gauge，多 rank label 集合变化也会跳变
  *
+ * 判定用**速率**而不是"涨了就算"：增量需 ≥ `ACTIVITY_MIN_TOKENS_PER_SEC`（见该常量注释，
+ * 滤掉健康检查/keepalive 这种 1 token 级报动）。
+ *
  * @param {object|null} load 本次负载
  * @param {{ prefillTokens: number|null, decodeTokens: number|null, usedTokens: number|null, at: number }|null} prev 上次采样
  * @param {number} [at] 本次采样时间戳（毫秒）
@@ -268,15 +280,17 @@ export function sampleActivity(load, prev = null, at = Date.now()) {
   const decodeTokens = load?.realtimeGenTokensTotal ?? null
   const usedTokens = load?.usedTokensTotal ?? null
   const sample = { prefillTokens, decodeTokens, usedTokens, at }
-  const usable = prev && at > prev.at
-  const grew = (curr, before) => curr != null && before != null && curr > before
-  if (!usable) return { active: false, prefillActive: false, sample }
+  if (!prev || at <= prev.at) return { active: false, prefillActive: false, sample }
 
-  const prefillActive = grew(prefillTokens, prev.prefillTokens)
+  const dt = (at - prev.at) / 1000 // 秒
+  const rate = (curr, before) =>
+    curr != null && before != null && curr > before ? (curr - before) / dt : 0
+
+  const prefillActive = rate(prefillTokens, prev.prefillTokens) >= ACTIVITY_MIN_TOKENS_PER_SEC
   const hasCounters = prefillTokens != null || decodeTokens != null
   const active = hasCounters
-    ? prefillActive || grew(decodeTokens, prev.decodeTokens)
-    : grew(usedTokens, prev.usedTokens)
+    ? prefillActive || rate(decodeTokens, prev.decodeTokens) >= ACTIVITY_MIN_TOKENS_PER_SEC
+    : rate(usedTokens, prev.usedTokens) >= ACTIVITY_MIN_TOKENS_PER_SEC
   return { active, prefillActive, sample }
 }
 

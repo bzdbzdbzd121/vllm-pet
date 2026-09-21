@@ -387,3 +387,58 @@ test('poller: 只有 /metrics（无 /v1/loads）时计数回落到 gauge', async
     await fake.close()
   }
 })
+
+test('poller: 优先用非生成式的 /ready 判活，不触发 SGLang 的 1 token 健康生成', async () => {
+  let healthHits = 0
+  const fake = await startFakeServer({
+    '/ready': (_req, res) => res.writeHead(200).end('ok'),
+    '/health': (_req, res) => { healthHits += 1; res.writeHead(200).end('ok') },
+    '/metrics': (req, res) => sglangMetrics({ running: 0, waiting: 0, cache: 0.3, genTotal: 700 })(req, res)
+  })
+  try {
+    const poller = new PollerService({ getConfig: () => ({}), onStatus: () => {} })
+    const cfg = pollConfig(fake.base)
+    await poller._poll(cfg)
+    await poller._poll(cfg)
+    assert.equal(healthHits, 0) // 一次都没打会触发生成的 /health
+    assert.equal(fake.hits['/ready'], 2)
+  } finally {
+    await fake.close()
+  }
+})
+
+test('poller: 没有 /ready（vLLM / 老版本）时回落 healthPath，且只探一次 /ready', async () => {
+  const fake = await startFakeServer({
+    '/health': (_req, res) => res.writeHead(200).end('ok'),
+    '/metrics': (req, res) => sglangMetrics({ running: 2, waiting: 0, cache: 0.3, genTotal: 700 })(req, res)
+  })
+  try {
+    const poller = new PollerService({ getConfig: () => ({}), onStatus: () => {} })
+    const cfg = pollConfig(fake.base)
+    const a = await poller._poll(cfg)
+    const b = await poller._poll(cfg)
+    assert.equal(a.state, 'busy')
+    assert.equal(b.state, 'busy')
+    assert.equal(fake.hits['/ready'], 1) // 404 后记住不再重复探
+    assert.equal(fake.hits['/health'], 2)
+  } finally {
+    await fake.close()
+  }
+})
+
+test('poller: 自定义 healthPath 时不被 /ready 取代（尊重用户配置）', async () => {
+  const fake = await startFakeServer({
+    '/ready': (_req, res) => res.writeHead(200).end('ok'),
+    '/health_generate': (_req, res) => res.writeHead(200).end('ok'),
+    '/metrics': (req, res) => sglangMetrics({ running: 0, waiting: 0, cache: 0.3, genTotal: 700 })(req, res)
+  })
+  try {
+    const poller = new PollerService({ getConfig: () => ({}), onStatus: () => {} })
+    const cfg = pollConfig(fake.base, { healthPath: '/health_generate' })
+    await poller._poll(cfg)
+    assert.equal(fake.hits['/ready'], undefined)
+    assert.equal(fake.hits['/health_generate'], 1)
+  } finally {
+    await fake.close()
+  }
+})

@@ -16,6 +16,15 @@ import { parsePrometheusMetrics, parseLoadsResponse, mergeLoads, deriveState, sa
 const FETCH_TIMEOUT_MS = 4000
 /** SGLang 负载接口（/get_load 已废弃；不带 include 会返回全部段落） */
 const LOADS_PATH = '/v1/loads?include=core'
+/**
+ * SGLang 的就绪接口（非生成式，只看 server_status）。
+ * ⚠️ 即使用户没改 healthPath，也不能直接打 `/health`：SGLang 的 `/health` 默认会**真的生成
+ * 1 个 token**（`SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION` 默认 True），每 2s 轮一次就是 0.5 tok/s，
+ * 既白烧显卡又把桌宠自己的活动信号喂成"在忙"。所以 healthPath 为默认值时优先用它，
+ * 不支持（404/405）再回落 healthPath（vLLM、老版本 SGLang）。
+ */
+const READY_PATH = '/ready'
+const DEFAULT_HEALTH_PATH = '/health'
 /** 探测到服务不支持 /v1/loads 后，多久再试一次（服务可能中途重启为 SGLang） */
 const LOADS_RETRY_MS = 60_000
 /** 健康但读不到负载指标时给 UI 的短提示（设置面板里有详细说明） */
@@ -35,6 +44,7 @@ export class PollerService {
     this._lastActivity = null // { prefillTokens, decodeTokens, usedTokens, at }：上一次活动采样
     this._loadsUnsupported = false // 服务不支持 /v1/loads（探过一次就不再每轮都打）
     this._loadsCheckedAt = 0
+    this._readyUnsupported = false // 服务没有 /ready（vLLM / 老版本 SGLang）→ 回落 healthPath
   }
 
   start() {
@@ -52,6 +62,7 @@ export class PollerService {
     this.stop()
     // 配置可能换了服务地址/引擎，重新探测负载接口
     this._loadsUnsupported = false
+    this._readyUnsupported = false
     this._lastGenSample = null
     this._lastActivity = null
     this.start()
@@ -85,9 +96,9 @@ export class PollerService {
     const startedAt = Date.now()
     const backend = BACKENDS.includes(config.backend) ? config.backend : 'auto'
 
-    // 1. 健康检查（/health 失败时用 /v1/models 兜底）
+    // 1. 健康检查（默认 healthPath 时优先非生成式的 /ready，失败时用 /v1/models 兜底）
     const netErrs = []
-    let healthOk = await tryHealth(base + config.healthPath, headers, netErrs)
+    let healthOk = await this._healthOk(base, headers, netErrs, config.healthPath)
     let models = []
     if (!healthOk) {
       const res = await tryFetch(base + '/v1/models', headers, netErrs)
@@ -143,6 +154,22 @@ export class PollerService {
       hint: healthOk && loadSource === 'none' ? NO_LOAD_HINT : null,
       error: healthOk ? null : describeNetError(netErrs[0])
     })
+  }
+
+  /**
+   * 判活：healthPath 是默认值时先试 SGLang 的 `/ready`（不会触发 1 token 生成）。
+   * `/ready` 只要响应了就以它为准（200 就绪 / 503 启动中），不再去打会触发生成的 `/health`；
+   * 404/405 说明服务没有该端点（vLLM、老版本）→ 记下来，之后一直用 healthPath。
+   */
+  async _healthOk(base, headers, netErrs, healthPath) {
+    if (healthPath === DEFAULT_HEALTH_PATH && !this._readyUnsupported) {
+      const res = await tryFetch(base + READY_PATH, headers, netErrs)
+      if (res) {
+        if (res.status === 404 || res.status === 405) this._readyUnsupported = true
+        else return res.ok
+      }
+    }
+    return tryHealth(base + healthPath, headers, netErrs)
   }
 
   /** GET /v1/loads?include=core；不支持的服务探一次后退避，避免每轮都打 */

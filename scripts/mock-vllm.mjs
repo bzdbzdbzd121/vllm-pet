@@ -11,6 +11,9 @@
  *   node scripts/mock-vllm.mjs --backend sglang --no-metrics
  *                                                       # 模拟 SGLang 未加 --enable-metrics：
  *                                                       # /metrics 返回 404，桌宠应回退 /v1/loads
+ *   node scripts/mock-vllm.mjs --backend sglang --health-generates
+ *                                                       # 模拟 SGLang 默认的 /health 生成 1 token，
+ *                                                       # 验证桌宠不会因此误判为"推理中·0.5 tok/s"
  *   node scripts/mock-vllm.mjs --backend sglang --stale-gauge 8
  *                                                       # 模拟 gauge 冻结：/metrics 永远报
  *                                                       # running=8，/v1/loads 报真实值 0
@@ -51,6 +54,14 @@ const PREFILL_TPS = argNum('prefill-tps', 1200) // 每个 poll 间隔推进的 p
  * 此时 /metrics 一直报 --stale-gauge 给的旧值，而 /v1/loads（请求时现算）报真实值 0。
  */
 const STALE_GAUGE = args.includes('--stale-gauge') ? argNum('stale-gauge', 8) : null
+/**
+ * 模拟 SGLang 的 /health 默认行为：真生成 1 个 token
+ * （SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION 默认 True）。
+ * 监测端每 2s 探一次就是 0.5 tok/s —— 用来验证桌宠不会把自己的健康检查当成"在推理"。
+ */
+const HEALTH_GENERATES = args.includes('--health-generates')
+/** 模拟没有 /ready 的服务（vLLM、老版本 SGLang）→ 端必须回落到 healthPath */
+const NO_READY = args.includes('--no-ready')
 
 const PHASES = [
   { name: 'idle', running: 0, waiting: 0, cache: 0.28 },
@@ -128,6 +139,13 @@ function advanceTokens(running) {
     unsettledPrompt = 0
     lastSettle = now
   }
+}
+
+/** 注入 n 个生成 token：模拟健康检查触发的那次 1-token 生成 */
+function injectGeneratedTokens(n) {
+  realtimeGenTotal += n
+  unsettledGen += n
+  usedTokens += n
 }
 
 const MODEL = 'mock-qwen3-32b'
@@ -218,7 +236,11 @@ function loadsBody({ running, waiting, cache }) {
 const server = http.createServer((req, res) => {
   const { running, waiting, cache } = current()
   const path = req.url.split('?')[0]
-  if (path === '/health') {
+  if (path === '/ready') {
+    if (NO_READY) res.writeHead(404).end('not found') // 模拟没有该端点
+    else res.writeHead(200).end('ok') // 非生成式就绪检查（桌宠默认走这个）
+  } else if (path === '/health') {
+    if (HEALTH_GENERATES) injectGeneratedTokens(1) // 真实 SGLang 的默认：/health 会真生成 1 token
     res.writeHead(200).end('ok')
   } else if (path === '/v1/models') {
     res.writeHead(200, { 'content-type': 'application/json' })
@@ -256,5 +278,6 @@ server.listen(PORT, () => {
   const loads = BACKEND === 'sglang' ? ' /v1/loads' : ''
   const prefill = PREFILL ? ' --prefill 模拟 chunked prefill（并发 gauge 恒为 0，prefill/KV 仍在增长）' : ''
   const stale = STALE_GAUGE != null ? ` --stale-gauge ${STALE_GAUGE} 模拟 gauge 冻结（/metrics 永远报旧值，/v1/loads 报真实值）` : ''
-  console.log(`[mock-vllm] http://127.0.0.1:${PORT}  backend=${BACKEND} (health /v1/models ${metrics}${loads})${CYCLE ? ' --cycle 每 8s 换档' : ''}${prefill}${stale}`)
+  const healthGen = HEALTH_GENERATES ? ' --health-generates 模拟 /health 真生成 1 token（每 2s 探一次 = 0.5 tok/s）' : ''
+  console.log(`[mock-vllm] http://127.0.0.1:${PORT}  backend=${BACKEND} (health /v1/models ${metrics}${loads})${CYCLE ? ' --cycle 每 8s 换档' : ''}${prefill}${stale}${healthGen}`)
 })
