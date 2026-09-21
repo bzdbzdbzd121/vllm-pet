@@ -26,8 +26,9 @@ sglang serv ┘         src/main/poller-service.js                       state-m
 
 **采集链路（poller-service.js `_poll`，配置 `backend` = auto/vllm/sglang）**：
 
-1. 判活：`healthPath` 保持默认 `/health` 时**先打 SGLang 的非生成式 `/ready`**（`/health` 默认会
-   真生成 1 个 token，见 §4.11），404/405 才回落 `<healthPath>`；都失败时 `GET /v1/models` 兜底
+1. 判活：`healthPath` 保持默认 `/health` 时依次试**非生成式**端点 `/ready`（SGLang）→ `/v1/models`
+   （OpenAI 标准），都没有才用 `<healthPath>`（SGLang 的 `/health` 默认会真生成 1 个 token，
+   见 §4.11）；自定义过 healthPath 就尊重用户配置
 2. `GET <apiBase><metricsPath>` → `parsePrometheusMetrics`：`vllm:*` 与 `sglang:*` 两族指标名
    一起认（按前缀区分，多 rank 求和，见 §3.6）
 3. SGLang 再取 `GET /v1/loads?include=core`（≥ 0.5.8）→ `parseLoadsResponse`，用 `mergeLoads()`
@@ -71,11 +72,11 @@ src/renderer/status/state-machine.js  快照 → 视觉状态（含 stateMap、�
 src/renderer/status/providers.js      IPC / Mock / 浏览器直连三种状态来源 + 默认配置
 src/renderer/ui/settings-panel.js     浏览器模式下的内嵌设置气泡
 src/renderer/skins/         皮肤加载器 + 内置皮肤（default-robot + 4 款换色）
-scripts/mock-vllm.mjs       假推理服务（--backend vllm|sglang、--no-metrics、--prefill、--stale-gauge N、--health-generates、--no-ready、--port/--running/--waiting/--cache/--cycle）
+scripts/mock-vllm.mjs       假推理服务（--backend vllm|sglang、--no-metrics、--prefill、--stale-gauge N、--health-generates、--no-ready、--log-requests、--port/--running/--waiting/--cache/--cycle）
 scripts/probe-load.mjs      排障用：打印某地址的采集结果（状态/引擎/数据来源/逐项 HTTP 码）
 scripts/smoke.mjs           集成冒烟（隐藏窗口 + 截图，见 §5）
 scripts/dev-desktop.mjs     vite dev server + Electron 热更新联调
-tests/*.test.mjs            node --test，87 个用例
+tests/*.test.mjs            node --test，89 个用例
 ```
 
 ## 3. 关键设计决策（勿轻易推翻）
@@ -164,12 +165,17 @@ tests/*.test.mjs            node --test，87 个用例
 
 11. **别让监测端把服务喂成"在推理"**：SGLang 的 `/health` 默认**会真生成 1 个 token**
    （`SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION` 默认 `True`，`http_server.py` 里只有关掉它才直接
-   返回 200；而且 `is_fully_idle()` 时才会真跑，正是我们的空闲场景）。轮询每 2s 探一次
-   ＝ 0.5 tok/s 的连续 decode 计数增长 → 活动信号判"在忙" → 症状是"空闲时还显示推理中 0.5 tok/s"，
-   同时白烧显卡。两道防线：① `healthPath` 为默认值时优先用非生成式 `/ready`
-   （404/405 才回落 healthPath，`_readyUnsupported` 只探一次）；② 活动判定要过
-   `ACTIVITY_MIN_TOKENS_PER_SEC`（5 token/s）的速率门槛，滤掉 1 token 级抖动。
-   复现：`node scripts/mock-vllm.mjs --backend sglang --health-generates [--no-ready]`。
+   返回 200；而且 `is_fully_idle()` 时才会真跑，正好是我们的空闲场景）。它有两重伤害：
+   ① 每次探活都真跑一次生成（每 2s 一次 = 白烧显卡）；
+   ② **那个 1-token 请求会短暂出现在 `running_batch`/`waiting_queue` 里**，而我们紧接着请求的
+   `/v1/loads` 会把它数成"正在运行"——于是空闲时永远显示"推理中 ×1 · 0.5 tok/s"
+   （1 token / 2s 正好 0.5 tok/s）。注意 ② 是关键：光看 counter 增长会被速率门槛挡住，
+   但并发数被顶上去是挡不住的。修法：**判活链路必须是"非生成式优先"**——
+   默认 `healthPath` 时依次试 `/ready`（SGLang 就绪检查）→ `/v1/models`（OpenAI 标准）→
+   `healthPath`(/health 兜底)；404/405 记住不再探，401/403 继续试下一个，
+   自定义过 `healthPath` 则完全尊重用户配置。复现与验证：
+   `node scripts/mock-vllm.mjs --backend sglang --health-generates [--no-ready] --running 0 --waiting 0 --log-requests`
+   （mock 会如实让幽灵请求出现在 `/v1/loads` 里，并打印收到的端点，可直接确认没打 `/health`）。
 
 ## 5. 验证工作流（提交前必做）
 

@@ -442,3 +442,26 @@ test('poller: 自定义 healthPath 时不被 /ready 取代（尊重用户配置�
     await fake.close()
   }
 })
+
+test('poller: /health 会生成 token 的服务（无 /ready）——不该拿它判活，否则自己的探活会被数成在跑', async () => {
+  // 复现线上现象：SGLang 的 /health 默认真生成 1 个 token，那个请求会短暂出现在
+  // running_batch 里，被 /v1/loads 数成"正在运行" → 空闲时一直显示"推理中 ×1 · 0.5 tok/s"
+  let phantom = 0
+  const fake = await startFakeServer({
+    '/health': (_req, res) => { phantom = 1; res.writeHead(200).end('ok') }, // 触发生成 → 服务里出现 1 个在跑请求
+    '/v1/models': (_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"data":[]}') },
+    '/metrics': (req, res) => sglangMetrics({ running: phantom, waiting: 0, cache: 0.3, genTotal: 700, realtimeGenTotal: 0 })(req, res),
+    '/v1/loads': (req, res) => sglangLoads(phantom, 0, 0.3, 0, 3000)(req, res)
+  })
+  try {
+    const poller = new PollerService({ getConfig: () => ({}), onStatus: () => {} })
+    const cfg = pollConfig(fake.base)
+    await poller._poll(cfg)
+    const snap = await poller._poll(cfg)
+    assert.equal(fake.hits['/health'], undefined) // 绝不能打会触发生成的 /health
+    assert.equal(snap.state, 'idle') // ← 修复点：以前会被自己的探活顶成 busy
+    assert.equal(snap.running, 0)
+  } finally {
+    await fake.close()
+  }
+})

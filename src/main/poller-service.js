@@ -18,12 +18,14 @@ const FETCH_TIMEOUT_MS = 4000
 const LOADS_PATH = '/v1/loads?include=core'
 /**
  * SGLang 的就绪接口（非生成式，只看 server_status）。
- * ⚠️ 即使用户没改 healthPath，也不能直接打 `/health`：SGLang 的 `/health` 默认会**真的生成
- * 1 个 token**（`SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION` 默认 True），每 2s 轮一次就是 0.5 tok/s，
- * 既白烧显卡又把桌宠自己的活动信号喂成"在忙"。所以 healthPath 为默认值时优先用它，
- * 不支持（404/405）再回落 healthPath（vLLM、老版本 SGLang）。
+ * ⚠️ 判活绝不能拿 `/health` 打头：SGLang 的 `/health` 默认**会真的生成 1 个 token**
+ * （`SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION` 默认 True，§4.11），而且那个请求会短暂出现在
+ * running_batch / waiting_queue 里被 `/v1/loads` 数成"正在运行"——于是空闲时永远显示
+ * "推理中 ×1 · 0.5 tok/s"（每 2s 轮询一次，正好 1 token = 0.5 tok/s）。
+ * 所以判活按"非生成式优先"依次尝试：/ready → /v1/models → healthPath。
  */
 const READY_PATH = '/ready'
+const MODELS_PATH = '/v1/models'
 const DEFAULT_HEALTH_PATH = '/health'
 /** 探测到服务不支持 /v1/loads 后，多久再试一次（服务可能中途重启为 SGLang） */
 const LOADS_RETRY_MS = 60_000
@@ -44,7 +46,8 @@ export class PollerService {
     this._lastActivity = null // { prefillTokens, decodeTokens, usedTokens, at }：上一次活动采样
     this._loadsUnsupported = false // 服务不支持 /v1/loads（探过一次就不再每轮都打）
     this._loadsCheckedAt = 0
-    this._readyUnsupported = false // 服务没有 /ready（vLLM / 老版本 SGLang）→ 回落 healthPath
+    this._readyUnsupported = false // 服务没有 /ready（vLLM / 老版本 SGLang）→ 试下一个
+    this._modelsUnsupported = false // 服务没有 /v1/models → 最后才用会触发生成的 healthPath
   }
 
   start() {
@@ -63,6 +66,7 @@ export class PollerService {
     // 配置可能换了服务地址/引擎，重新探测负载接口
     this._loadsUnsupported = false
     this._readyUnsupported = false
+    this._modelsUnsupported = false
     this._lastGenSample = null
     this._lastActivity = null
     this.start()
@@ -96,17 +100,15 @@ export class PollerService {
     const startedAt = Date.now()
     const backend = BACKENDS.includes(config.backend) ? config.backend : 'auto'
 
-    // 1. 健康检查（默认 healthPath 时优先非生成式的 /ready，失败时用 /v1/models 兜底）
+    // 1. 判活：非生成式优先（/ready → /v1/models → healthPath），失败时再用 /v1/models 兜底
     const netErrs = []
-    let healthOk = await this._healthOk(base, headers, netErrs, config.healthPath)
-    let models = []
-    if (!healthOk) {
-      const res = await tryFetch(base + '/v1/models', headers, netErrs)
+    const health = await this._checkHealth(base, headers, netErrs, config.healthPath)
+    let healthOk = health.ok
+    let models = health.models
+    if (!healthOk && !health.viaModels) {
+      const res = await tryFetch(base + MODELS_PATH, headers, netErrs)
       healthOk = !!res?.ok
-      if (res?.ok) {
-        const data = await res.json().catch(() => null)
-        models = Array.isArray(data?.data) ? data.data.map((m) => m?.id).filter(Boolean) : []
-      }
+      if (healthOk) models = await readModelIds(res)
     }
 
     // 2. 指标：counter（tok/s、活动信号）与 gauge
@@ -157,19 +159,33 @@ export class PollerService {
   }
 
   /**
-   * 判活：healthPath 是默认值时先试 SGLang 的 `/ready`（不会触发 1 token 生成）。
-   * `/ready` 只要响应了就以它为准（200 就绪 / 503 启动中），不再去打会触发生成的 `/health`；
-   * 404/405 说明服务没有该端点（vLLM、老版本）→ 记下来，之后一直用 healthPath。
+   * 判活。默认 healthPath 时按"非生成式优先"依次尝试 `/ready` → `/v1/models` → `healthPath`。
+   *
+   * `/health` 必须放最后：SGLang 的 `/health` 默认会真生成 1 个 token，而那个请求会被我们紧接着
+   * 请求的 `/v1/loads` 数成"正在运行"（见文件头注释与 §4.11）。
+   * 404/405 = 没有该端点（记住，不再重复探）；401/403 = 端点在但要鉴权（试下一个，
+   * 保留以前"密钥不对时 /health 仍能判活"的行为）；其余响应就以它为准（200 就绪 / 503 启动中）。
+   * 用户自定义了 healthPath 就完全尊重用户配置。
+   *
+   * @returns {Promise<{ ok: boolean, models: string[], viaModels: boolean }>}
    */
-  async _healthOk(base, headers, netErrs, healthPath) {
-    if (healthPath === DEFAULT_HEALTH_PATH && !this._readyUnsupported) {
-      const res = await tryFetch(base + READY_PATH, headers, netErrs)
-      if (res) {
-        if (res.status === 404 || res.status === 405) this._readyUnsupported = true
-        else return res.ok
-      }
+  async _checkHealth(base, headers, netErrs, healthPath) {
+    if (healthPath !== DEFAULT_HEALTH_PATH) {
+      return { ok: await tryHealth(base + healthPath, headers, netErrs), models: [], viaModels: false }
     }
-    return tryHealth(base + healthPath, headers, netErrs)
+    for (const [path, flag] of [[READY_PATH, '_readyUnsupported'], [MODELS_PATH, '_modelsUnsupported']]) {
+      if (this[flag]) continue
+      const res = await tryFetch(base + path, headers, netErrs)
+      if (!res) continue
+      if (res.status === 404 || res.status === 405) {
+        this[flag] = true
+        continue
+      }
+      if (res.status === 401 || res.status === 403) continue
+      if (path === MODELS_PATH) return { ok: res.ok, models: await readModelIds(res), viaModels: true }
+      return { ok: res.ok, models: [], viaModels: false }
+    }
+    return { ok: await tryHealth(base + healthPath, headers, netErrs), models: [], viaModels: false }
   }
 
   /** GET /v1/loads?include=core；不支持的服务探一次后退避，避免每轮都打 */
@@ -206,6 +222,12 @@ export class PollerService {
 async function tryHealth(url, headers, errs) {
   const res = await tryFetch(url, headers, errs)
   return !!res?.ok
+}
+
+/** 从 /v1/models 响应里取模型名（拿不到就空数组） */
+async function readModelIds(res) {
+  const data = await res.json().catch(() => null)
+  return Array.isArray(data?.data) ? data.data.map((m) => m?.id).filter(Boolean) : []
 }
 
 async function tryFetch(url, headers, errs) {

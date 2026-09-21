@@ -62,6 +62,8 @@ const STALE_GAUGE = args.includes('--stale-gauge') ? argNum('stale-gauge', 8) : 
 const HEALTH_GENERATES = args.includes('--health-generates')
 /** 模拟没有 /ready 的服务（vLLM、老版本 SGLang）→ 端必须回落到 healthPath */
 const NO_READY = args.includes('--no-ready')
+/** 打印每个请求（联调/验证用：可确认桌宠到底打了哪些端点） */
+const LOG_REQUESTS = args.includes('--log-requests')
 
 const PHASES = [
   { name: 'idle', running: 0, waiting: 0, cache: 0.28 },
@@ -79,16 +81,24 @@ if (CYCLE) {
   }, 8000)
 }
 
-function current() {
+/** 真实负载（不含健康检查造成的幽灵请求） */
+function base() {
   const phase = CYCLE ? PHASES[phaseIndex] : { name: 'fixed', ...fixed }
   // SGLang 的盲区：正在 prefill 的请求不在 running_batch / waiting_queue 里
   return PREFILL ? { ...phase, running: 0, waiting: 0 } : phase
 }
 
-/** /metrics 侧（推送快照，可能冻结）：--stale-gauge 时永远报旧值；/v1/loads 侧用 current() */
+/** 对外可见的实时负载（/v1/loads 用）：加上健康检查正在跑的幽灵请求 */
+function current() {
+  const b = base()
+  const phantom = phantomRunning()
+  return phantom ? { ...b, running: b.running + phantom } : b
+}
+
+/** /metrics 侧（推送快照，可能冻结）：--stale-gauge 时永远报旧值 */
 function gauges() {
-  const phase = current()
-  return STALE_GAUGE == null ? phase : { ...phase, running: STALE_GAUGE, waiting: 0 }
+  const c = current()
+  return STALE_GAUGE == null ? c : { ...c, running: STALE_GAUGE, waiting: 0 }
 }
 
 // token counters——两组语义要区分（真实 SGLang 就是这样）：
@@ -140,6 +150,17 @@ function advanceTokens(running) {
     lastSettle = now
   }
 }
+
+/**
+ * 健康检查触发的那个 1-token 请求会**真的出现在调度器里**：它会短暂地待在
+ * running_batch / waiting_queue 中，于是 /v1/loads 与 /metrics 都会数到它 ——
+ * 这正是"监测端把自己喂成推理中 ×1 · 0.5 tok/s"的完整机制，之前 mock 没模拟这一半，
+ * 才让修复看起来通过了。
+ */
+const PHANTOM_WINDOW_MS = argNum('phantom-ms', 400)
+let phantomUntil = 0
+const beginPhantom = () => { phantomUntil = Date.now() + PHANTOM_WINDOW_MS }
+const phantomRunning = () => (Date.now() < phantomUntil ? 1 : 0)
 
 /** 注入 n 个生成 token：模拟健康检查触发的那次 1-token 生成 */
 function injectGeneratedTokens(n) {
@@ -236,11 +257,15 @@ function loadsBody({ running, waiting, cache }) {
 const server = http.createServer((req, res) => {
   const { running, waiting, cache } = current()
   const path = req.url.split('?')[0]
+  if (LOG_REQUESTS) console.log(`[req] ${path}`)
   if (path === '/ready') {
     if (NO_READY) res.writeHead(404).end('not found') // 模拟没有该端点
     else res.writeHead(200).end('ok') // 非生成式就绪检查（桌宠默认走这个）
   } else if (path === '/health') {
-    if (HEALTH_GENERATES) injectGeneratedTokens(1) // 真实 SGLang 的默认：/health 会真生成 1 token
+    if (HEALTH_GENERATES) {
+      injectGeneratedTokens(1) // 真实 SGLang 的默认：/health 会真生成 1 token
+      beginPhantom() // 而且它就真的在跑 → /v1/loads 会数到它
+    }
     res.writeHead(200).end('ok')
   } else if (path === '/v1/models') {
     res.writeHead(200, { 'content-type': 'application/json' })
@@ -257,7 +282,7 @@ const server = http.createServer((req, res) => {
     }
     const g = gauges()
     // token/counter 只随**真实**工作量推进：gauge 冻结时它不能跟着动（真实 SGLang 空闲即不动）
-    advanceTokens(running)
+    advanceTokens(base().running)
     res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4' })
     res.end(BACKEND === 'sglang' ? sglangMetrics(g) : vllmMetrics(g))
   } else if (path === '/v1/loads') {

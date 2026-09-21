@@ -46,9 +46,10 @@
 > vLLM 侧始终有 `/metrics`，老版本没有该接口时才降级。
 >
 > **`/health` 会触发生成**：SGLang 的 `/health` 默认**真的生成 1 个 token**
-> （`SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION` 默认 True）。所以桌宠在 `healthPath` 保持默认时
-> 改用 SGLang 的非生成式 `/ready` 判活（不支持则自动回落 `/health`）；活动判定还设了
-> ≥ 5 token/s 的速率门槛，1 token 级抖动不会被当成"在推理"。
+> （`SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION` 默认 True），而且那个请求会短暂出现在调度器里，
+> 被 `/v1/loads` 数成"正在运行"——监测端如果拿它探活，就会把自己喂成
+> "推理中 ×1 · 0.5 tok/s"。所以桌宠判活**非生成式优先**：`/ready` → `/v1/models` → `/health`
+> （自定义过 `healthPath` 时尊重你的配置）；活动判定另设 ≥ 5 token/s 的速率门槛。
 >
 > **SGLang 的 `/metrics` gauge 会滞后**：调度器转为空闲后 `num_running_reqs` 会**冻结在最后一批的数值**
 > 上（空闲路径的指标 flush 被 30s 节流，上游 PR #26495 实测卡了整整 30s）。所以桌宠的
@@ -244,10 +245,10 @@ node scripts/probe-load.mjs http://127.0.0.1:8000  vllm     # vLLM 默认端口
   `node scripts/probe-load.mjs <你的服务地址>` 看是哪个接口没通。
 - **忙碌状态显示 `推理中` 但没有 `×N`？** 服务正在 prefill（处理提示词）。SGLang 不把正在 prefill 的
   请求计入 `running_batch`，读不到并发数（见"状态映射规则"），所以只显示"推理中"，属正常。
-- **空闲时显示"推理中"附带很小的 tok/s（如 0.5 tok/s）？** 这是旧行为的症状：SGLang 的 `/health`
-  默认真生成 1 个 token，每 2 s 轮询一次正好 0.5 tok/s，被当成"在推理"。现在桌宠改用非生成式
-  `/ready` 判活，并对活动信号加了速率门槛，不会再出现；若还想更省，可在服务端设
-  `SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0`。
+- **空闲时显示"推理中 ×1"附带很小的 tok/s（如 0.5 tok/s）？** 监测端把 SGLang 探活触发的那次
+  1-token 生成数成了"在跑"（1 token / 2s = 0.5 tok/s）。现在判活改用非生成式端点
+  （`/ready` → `/v1/models`），不会再发生；也可以在服务端设
+  `SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION=0` 彻底免掉这次生成。
 - **服务已经空了，宠物还停留了一会儿"推理中"？** SGLang < 0.5.8 的 `/metrics` gauge 空闲后会冻结
   最长约 30s（上游 PR #26495）。≥ 0.5.8 的桌宠会用 `/v1/loads` 的实时值，不会出现这个滞后。
 - **预览页"直连真实服务"失败？** 浏览器跨源受 vLLM 服务的 CORS 限制，属正常现象；

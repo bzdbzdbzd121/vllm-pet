@@ -125,6 +125,7 @@ export class LiveFetchProvider {
     this._lastGenSample = null
     this._lastActivity = null
     this._readyUnsupported = false
+    this._modelsUnsupported = false
   }
 
   start(onStatus) {
@@ -144,40 +145,54 @@ export class LiveFetchProvider {
     clearTimeout(this._timer)
   }
 
+  /**
+   * 判活：默认 healthPath 时依次尝试 `/ready` → `/v1/models`（都是非生成式）。
+   * 404/405 = 没有该端点（记住）；401/403 = 要鉴权（试下一个）；其余以响应为准。
+   * @returns {Promise<{ ok: boolean, models: string[] }>}
+   */
+  async _checkHealth(base, headers) {
+    if (this.opts.healthPath !== '/health') return { ok: false, models: [] } // 自定义路径 → 交给调用方
+    for (const [path, flag] of [['/ready', '_readyUnsupported'], ['/v1/models', '_modelsUnsupported']]) {
+      if (this[flag]) continue
+      const res = await fetchWithTimeout(base + path, { headers }, 4000)
+      if (res.status === 404 || res.status === 405) {
+        this[flag] = true
+        continue
+      }
+      if (res.status === 401 || res.status === 403) continue
+      if (path === '/v1/models' && res.ok) {
+        const data = await res.json().catch(() => null)
+        return { ok: true, models: Array.isArray(data?.data) ? data.data.map((m) => m.id).filter(Boolean) : [] }
+      }
+      return { ok: res.ok, models: [] }
+    }
+    return { ok: false, models: [] }
+  }
+
   async _pollOnce() {
     const base = this.opts.apiBase.replace(/\/+$/, '')
     const headers = this.opts.apiKey ? { Authorization: `Bearer ${this.opts.apiKey}` } : {}
     const startedAt = Date.now()
 
+    // 判活：非生成式优先（/ready → /v1/models → healthPath），与主进程 poller 同策略。
+    // ⚠️ SGLang 的 /health 默认会真生成 1 个 token，且那个请求会被 /v1/loads 数成"正在运行"
+    //    → 空闲时显示"推理中 ×1 · 0.5 tok/s"，所以绝不能拿它打头（见 DEVELOPMENT §4.11）
     let healthOk = false
     let models = []
     let error = null
     try {
-      // 默认 healthPath 时优先 SGLang 的非生成式 /ready（/health 默认会真生成 1 个 token）
-      if (this.opts.healthPath === '/health' && !this._readyUnsupported) {
-        const readyRes = await fetchWithTimeout(base + '/ready', { headers }, 4000)
-        if (readyRes.status === 404 || readyRes.status === 405) {
-          this._readyUnsupported = true
-        } else {
-          healthOk = readyRes.ok
-        }
-      }
-      if (!healthOk && (this._readyUnsupported || this.opts.healthPath !== '/health')) {
-        const res = await fetchWithTimeout(base + this.opts.healthPath, { headers }, 4000)
-        healthOk = res.ok
-      }
+      const health = await this._checkHealth(base, headers)
+      healthOk = health.ok
+      models = health.models
     } catch (e) {
       error = friendlyFetchError(e)
     }
     if (!healthOk) {
+      // 老服务没有 /ready 也没有 /v1/models 时，最后才用可能触发生成的 healthPath
       try {
-        const res = await fetchWithTimeout(base + '/v1/models', { headers }, 4000)
+        const res = await fetchWithTimeout(base + this.opts.healthPath, { headers }, 4000)
         healthOk = res.ok
-        if (res.ok) {
-          const data = await res.json().catch(() => null)
-          models = Array.isArray(data?.data) ? data.data.map((m) => m.id).filter(Boolean) : []
-          error = null
-        }
+        if (healthOk) error = null
       } catch (e) {
         error = error || friendlyFetchError(e)
       }
