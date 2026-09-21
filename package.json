@@ -1,6 +1,6 @@
 {
   "name": "vllm-pet",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "vLLM Pet — 实时反映 vLLM / SGLang 推理服务状态的桌面宠物",
   "author": {
     "name": "bzdbzdbzd121",
