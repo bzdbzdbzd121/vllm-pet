@@ -42,7 +42,6 @@ export class PetView {
     this.skin = skin
     this.state = 'idle'
     this._celebrateTimer = 0
-    this._hoverFade = null
     this._hoverWarned = false
 
     this.stage = document.createElement('div')
@@ -159,7 +158,8 @@ export class PetView {
     }
     this._applyBobDuration()
     // 换肤会整体替换本体 SVG：新皮肤可能没有 .r-hover，需重新检查命中区
-    if (this._hoverFade?.enabled) this._warnIfNoHitRegion()
+    // （开关状态以 stage 上的 class 为单一来源，不另存副本）
+    if (this.stage.classList.contains('hover-fade-enabled')) this._warnIfNoHitRegion()
   }
 
   /**
@@ -170,7 +170,6 @@ export class PetView {
    */
   setHoverFade(input) {
     const { enabled, opacity } = normalizeHoverFade(input)
-    this._hoverFade = { enabled, opacity }
     this.stage.style.setProperty('--hover-opacity', String(opacity))
     this.stage.classList.toggle('hover-fade-enabled', enabled)
     if (enabled) this._warnIfNoHitRegion()
@@ -178,9 +177,13 @@ export class PetView {
 
   /** 皮肤缺 .r-hover 时悬停不会生效：只提示一次，不报错 */
   _warnIfNoHitRegion() {
-    if (this._hoverWarned || this.stage.querySelector('.r-hover')) return
-    this._hoverWarned = true
-    console.warn('[vllm-pet] 皮肤缺少 .r-hover 分组，悬停变透明不会生效（见 src/renderer/skins/README.md）')
+    // 延到下一个微任务再查 DOM：一次配置应用里 setHoverFade 之后紧接的就是 applySkin
+    //（整体替换本体 SVG），同步检查看到的是换肤前的旧 DOM，会误报「刚换到好皮肤却说缺分组」。
+    queueMicrotask(() => {
+      if (this._hoverWarned || this.stage.querySelector('.r-hover')) return
+      this._hoverWarned = true
+      console.warn('[vllm-pet] 皮肤缺少 .r-hover 分组，悬停变透明不会生效（见 src/renderer/skins/README.md）')
+    })
   }
 
   _applyBobDuration() {
