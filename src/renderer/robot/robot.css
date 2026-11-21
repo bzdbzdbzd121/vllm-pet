@@ -442,3 +442,9 @@
   opacity: var(--hover-opacity, 0.4);
   transition-delay: 0ms; /* 进入立刻开始淡化 */
 }
+.pet-settings input[type="range"] {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 2px 0 0;
+  accent-color: var(--c-body, #7fd8c9);
+}

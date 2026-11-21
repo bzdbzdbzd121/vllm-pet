@@ -57,6 +57,16 @@ test('默认常量与返回值：归一化结果落在新对象上，不改动�
 })
 
 test('一致性：主进程与预览页两份默认配置归一化后相同且等于默认值', () => {
+  // 用 `in` 而不是 normalizeHoverFade(默认值)：键名被改时 normalizeHoverFade(undefined)
+  // 仍会返回默认值，那样的断言对「改键名」无感。
+  assert.ok('hoverFade' in MAIN_DEFAULT, '主进程默认配置缺少 hoverFade 键')
+  assert.ok('hoverFade' in PREVIEW_DEFAULT, '预览页默认配置缺少 hoverFade 键')
+  assert.deepEqual(MAIN_DEFAULT.hoverFade, DEFAULT_HOVER_FADE)
+  assert.deepEqual(PREVIEW_DEFAULT.hoverFade, DEFAULT_HOVER_FADE)
+  // 两处共用同一常量取值，但必须是各自的拷贝：不能把冻结的共享对象直接放进配置
+  assert.notEqual(MAIN_DEFAULT.hoverFade, PREVIEW_DEFAULT.hoverFade)
+  assert.notEqual(MAIN_DEFAULT.hoverFade, DEFAULT_HOVER_FADE)
+  assert.notEqual(PREVIEW_DEFAULT.hoverFade, DEFAULT_HOVER_FADE)
   assert.deepEqual(normalizeHoverFade(MAIN_DEFAULT.hoverFade), { enabled: true, opacity: 0.4 })
   assert.deepEqual(normalizeHoverFade(PREVIEW_DEFAULT.hoverFade), DEFAULT_HOVER_FADE)
 })

@@ -2,9 +2,32 @@
  * settings-panel.js — 设置面板（独立设置窗口 / 预览页内嵌 共用）
  *
  * 可配置：服务连接、状态切换条件（各档并发/KV 阈值）、动画映射（每档用哪个动画）、
- * 皮肤、体型缩放、状态文本（显隐 / 字号 / KV cache 百分比）、窗口置顶/穿透。
+ * 皮肤、体型缩放、状态文本（显隐 / 字号 / KV cache 百分比）、窗口置顶/穿透、
+ * 悬停淡化（开关 + 悬停时不透明度）。
  */
 import { listAvailableSkins } from '../skins/skin-loader.js'
+import { normalizeHoverFade } from '../../shared/hover-fade.js'
+
+/** 面板回填：把 hoverFade 归一化成表单初值（勾选状态 + 0–100 整数百分比） */
+export function hoverFadeFormState(config) {
+  const { enabled, opacity } = normalizeHoverFade(config?.hoverFade)
+  return { enabled, pct: Math.round(opacity * 100) }
+}
+
+/**
+ * 面板保存：把表单值解析回配置。
+ * 为什么不用面板里的 num()：它把 ≤0 一律当非法回退，会把「0% = 悬停时完全透明」静默改成默认值。
+ * 这里的回退基准是**当前配置**归一化后的不透明度，空白/非法输入不会把用户已调好的值改回 40%。
+ * @param {{ enabled: unknown, opacityRaw: unknown }} form
+ * @param {object} config 当前配置（仅用作回退基准）
+ */
+export function hoverFadeFromForm({ enabled, opacityRaw }, config) {
+  const raw = typeof opacityRaw === 'string' ? opacityRaw.trim() : opacityRaw
+  const pct = raw === '' || raw === null || raw === undefined ? NaN : Number(raw)
+  const fallback = normalizeHoverFade(config?.hoverFade).opacity
+  const opacity = Number.isFinite(pct) ? Math.min(1, Math.max(0, pct / 100)) : fallback
+  return { enabled: enabled === true, opacity }
+}
 
 const ANIMATION_OPTIONS = [
   { value: 'busy-1', label: '💨 轻快（天线脉冲）' },
@@ -52,6 +75,8 @@ export class SettingsPanel {
       <select name="${name}">
         ${ANIMATION_OPTIONS.map((o) => `<option value="${o.value}" ${o.value === current ? 'selected' : ''}>${o.label}</option>`).join('')}
       </select>`
+
+    const hf = hoverFadeFormState(config)
 
     const el = document.createElement('div')
     el.className = 'pet-settings'
@@ -109,6 +134,14 @@ export class SettingsPanel {
       <div class="check"><input type="checkbox" name="alwaysOnTop" ${config.window?.alwaysOnTop !== false ? 'checked' : ''}><span>窗口置顶</span></div>
       <div class="check"><input type="checkbox" name="allWorkspaces" ${config.window?.allWorkspaces !== false ? 'checked' : ''}><span>在所有桌面显示（macOS 切换桌面空间时宠物不消失）</span></div>
       <div class="check"><input type="checkbox" name="clickThrough" ${config.window?.clickThrough ? 'checked' : ''}><span>鼠标穿透（托盘菜单可恢复）</span></div>
+      <div class="check"><input type="checkbox" name="hoverFadeEnabled" ${hf.enabled ? 'checked' : ''}><span>鼠标悬停在宠物上时变透明</span></div>
+      <div class="row">
+        <div>
+          <label>悬停时不透明度<span class="section-note" id="hoverFadePct">${hf.pct}%</span></label>
+          <input type="range" name="hoverFadeOpacity" min="0" max="100" step="5" value="${hf.pct}">
+        </div>
+      </div>
+      <div class="hint">数值越小越透明；0% = 悬停时完全看不见，移开鼠标即恢复。只对宠物本体生效：旁边的空白、地面阴影、状态文字和粒子特效都不会触发。</div>
 
       <div class="section">⬆️ 更新</div>
       <div class="check"><input type="checkbox" name="autoUpdate" ${config.update?.autoCheck !== false ? 'checked' : ''}><span>启动时自动检查更新</span></div>
@@ -134,6 +167,10 @@ export class SettingsPanel {
       })
     })
     el.querySelector('.btn-close').addEventListener('click', () => this.close())
+    // 拖动滑块时实时显示百分比（保存前就能看到数值）
+    el.querySelector('[name="hoverFadeOpacity"]')?.addEventListener('input', (e) => {
+      el.querySelector('#hoverFadePct').textContent = `${e.target.value}%`
+    })
     el.querySelector('.btn-save').addEventListener('click', async () => {
       const get = (n) => el.querySelector(`[name="${n}"]`)
       const num = (n, fallback) => {
@@ -166,6 +203,7 @@ export class SettingsPanel {
           clickThrough: get('clickThrough').checked,
           scale: num('scale', 1)
         },
+        hoverFade: hoverFadeFromForm({ enabled: get('hoverFadeEnabled').checked, opacityRaw: get('hoverFadeOpacity').value }, config),
         update: { autoCheck: get('autoUpdate').checked }
       }
       const saved = await this.provider.saveConfig(patch)
