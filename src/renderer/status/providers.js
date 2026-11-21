@@ -5,6 +5,7 @@
  *   LiveFetchProvider  — 浏览器"真实直连"：直接 fetch vLLM（受 CORS 限制，仅调试用）
  */
 import { parsePrometheusMetrics, parseLoadsResponse, mergeLoads, deriveState, sampleGenerationRate, sampleActivity, DEFAULT_THRESHOLDS } from '../../shared/status-core.js'
+import { DEFAULT_HOVER_FADE } from '../../shared/hover-fade.js'
 
 export const DEFAULT_CONFIG = Object.freeze({
   apiBase: '',
@@ -20,6 +21,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   statusFontSize: 11,
   skin: 'default-robot',
   idleSleepMinutes: 10,
+  hoverFade: { ...DEFAULT_HOVER_FADE }, // 悬停淡化默认值，与主进程共用同一常量
   update: { autoCheck: true },
   window: { alwaysOnTop: true, clickThrough: false, scale: 1, opacity: 1, x: null, y: null }
 })

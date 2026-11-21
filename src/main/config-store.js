@@ -3,6 +3,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { DEFAULT_HOVER_FADE } from '../shared/hover-fade.js'
 
 export const DEFAULT_CONFIG = Object.freeze({
   apiBase: '',
@@ -18,6 +19,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   statusFontSize: 11,
   skin: 'default-robot',
   idleSleepMinutes: 10,
+  hoverFade: { ...DEFAULT_HOVER_FADE }, // 鼠标悬停在宠物本体上时淡化（阶段 2 起生效）
   update: { autoCheck: true },
   window: { alwaysOnTop: true, clickThrough: false, scale: 1, opacity: 1, x: null, y: null, allWorkspaces: true }
 })
