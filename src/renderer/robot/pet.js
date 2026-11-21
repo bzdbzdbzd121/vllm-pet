@@ -5,6 +5,7 @@
  *   'idle' | 'sleeping' | 'connecting' | 'busy-1' | 'busy-2' | 'busy-3' | 'offline'
  */
 import { applySkinToStage, bobDurationFor } from '../skins/skin-loader.js'
+import { normalizeHoverFade } from '../../shared/hover-fade.js'
 
 const VISUAL_STATES = ['idle', 'sleeping', 'connecting', 'busy-1', 'busy-2', 'busy-3', 'offline']
 const CELEBRATE_MS = 950
@@ -41,6 +42,8 @@ export class PetView {
     this.skin = skin
     this.state = 'idle'
     this._celebrateTimer = 0
+    this._hoverFade = null
+    this._hoverWarned = false
 
     this.stage = document.createElement('div')
     this.stage.className = 'pet-stage st-idle'
@@ -155,6 +158,29 @@ export class PetView {
       this.shadowWrap.innerHTML = shadow
     }
     this._applyBobDuration()
+    // 换肤会整体替换本体 SVG：新皮肤可能没有 .r-hover，需重新检查命中区
+    if (this._hoverFade?.enabled) this._warnIfNoHitRegion()
+  }
+
+  /**
+   * 悬停淡化：开关挂 class，不透明度写 CSS 变量。
+   * 命中判定与过渡全部交给 CSS（.r-hover:hover），这里不监听鼠标事件。
+   * class 只由 enabled 决定：把滑块改成 100% 不需要增删 class，行为可预测。
+   * @param {unknown} input config.hoverFade（畸形值由 normalizeHoverFade 收口）
+   */
+  setHoverFade(input) {
+    const { enabled, opacity } = normalizeHoverFade(input)
+    this._hoverFade = { enabled, opacity }
+    this.stage.style.setProperty('--hover-opacity', String(opacity))
+    this.stage.classList.toggle('hover-fade-enabled', enabled)
+    if (enabled) this._warnIfNoHitRegion()
+  }
+
+  /** 皮肤缺 .r-hover 时悬停不会生效：只提示一次，不报错 */
+  _warnIfNoHitRegion() {
+    if (this._hoverWarned || this.stage.querySelector('.r-hover')) return
+    this._hoverWarned = true
+    console.warn('[vllm-pet] 皮肤缺少 .r-hover 分组，悬停变透明不会生效（见 src/renderer/skins/README.md）')
   }
 
   _applyBobDuration() {

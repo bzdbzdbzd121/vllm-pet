@@ -53,7 +53,8 @@
 /* ---------- 配色（可被皮肤 CSS 变量覆盖） ---------- */
 .r-shadow { fill: rgba(10, 24, 30, 0.16); }
 .r-antenna-stem { stroke: var(--c-body-shade); stroke-width: 5; stroke-linecap: round; fill: none; }
-.r-antenna-glow { fill: var(--c-glow); opacity: 0.35; }
+/* 光晕是一圈柔光装饰：不参与悬停命中（否则灯泡周围会有一圈「看不见却能触发」的区域） */
+.r-antenna-glow { fill: var(--c-glow); opacity: 0.35; pointer-events: none; }
 .r-antenna-bulb { fill: var(--c-accent); }
 .r-ear { fill: var(--c-body-shade); }
 .r-head-shell { fill: var(--c-body); stroke: var(--c-body-shade); stroke-width: 3; }
@@ -416,4 +417,28 @@
   font-weight: 400;
   color: #7d99a2;
   font-size: 11px;
+}
+
+/* ============================================================
+   悬停淡化：鼠标压在本体上时，本体与地面阴影一起变淡
+   命中区 = .r-hover 分组里实际被绘制的图形（fill / stroke 非 none），
+   由浏览器按形状判定，圆角外侧、图形之间的缝、画布空白都不算。
+   不要改成 .pet-stage:hover / .pet-scale:hover / .r-svg:hover：
+   这些盒子与 SVG 根铺满 240×280 窗口，会让旁边的空白也触发（本次要修的就是这个）。
+   ============================================================ */
+
+/* 过渡写在「未触发时也成立」的规则上，否则离开悬停没有过渡可跑。
+   同时只有挂着这个 class 才启用过渡 —— 关闭开关时立即恢复，不做 180ms 等待。 */
+.pet-stage.hover-fade-enabled .pet-scale,
+.pet-stage.hover-fade-enabled .pet-shadow {
+  /* 离开先等 180ms 再恢复：跨过手臂与身体之间约 4.5px 的缝，以及拖动时窗口跟随的短暂滑出 */
+  transition: opacity 160ms ease 180ms;
+}
+
+/* 命中：.r-hover 的绘制图形上。特异性 (0,5,0)，将来要叠加「拖动时恢复不透明」时
+   必须把条件写进同一条规则（如 :has() 前加 :not(.is-dragging)），不能另写低特异性覆盖规则。 */
+.pet-stage.hover-fade-enabled:has(.r-hover:hover) .pet-scale,
+.pet-stage.hover-fade-enabled:has(.r-hover:hover) .pet-shadow {
+  opacity: var(--hover-opacity, 0.4);
+  transition-delay: 0ms; /* 进入立刻开始淡化 */
 }

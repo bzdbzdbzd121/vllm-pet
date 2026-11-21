@@ -19,6 +19,7 @@ async function boot() {
   const app = document.getElementById('app')
   const pet = new PetView(app, { skin, scale: config.window?.scale ?? 1 })
   pet.setStatusFontSize(config.statusFontSize ?? 11)
+  pet.setHoverFade(config.hoverFade)
 
   let statusEnabled = config.showStatus !== false
   let lastStatusText = ''
@@ -49,6 +50,7 @@ async function boot() {
     machine.setShowKvCache(saved.showKvCache !== false)
     pet.setScale(saved.window?.scale ?? 1)
     pet.setStatusFontSize(saved.statusFontSize ?? 11)
+    pet.setHoverFade(saved.hoverFade)
     pet.applySkin(await resolveSkin(saved.skin, bridge))
   }
 

@@ -29,6 +29,7 @@ async function boot() {
 
   const holder = document.getElementById('pet-holder')
   const pet = new PetView(holder, { skin, scale: 1 })
+  pet.setHoverFade(config.hoverFade)
   const snapshotEl = document.getElementById('snapshot')
   let statusEnabled = config.showStatus !== false
   let lastStatusText = ''
@@ -119,6 +120,7 @@ async function boot() {
       pet.setStatusLine(statusEnabled ? lastStatusText : '')
       // 切换 KV 百分比后立即重渲染当前状态文本（内部会回调 onStatusLine）
       machine.setShowKvCache(saved.showKvCache !== false)
+      pet.setHoverFade(saved.hoverFade)
       pet.applySkin(await resolveSkin(saved.skin, null))
       Object.assign(config, saved)
     }
