@@ -304,6 +304,22 @@ function runSmokeCapture() {
     // 默认 2.5s；需要捕获离线等延迟状态时用 VLLM_PET_SMOKE_DELAY 加大
     const delay = Math.max(0, Number(process.env.VLLM_PET_SMOKE_DELAY) || 2500)
     setTimeout(async () => {
+      // 精度探针：只在冒烟模式下、且显式请求时生效（正常运行路径零影响）
+      if (process.env.VLLM_PET_SMOKE_HOVER_PROBE === '1') {
+        try {
+          const probe = fs.readFileSync(path.join(ROOT, 'scripts', 'hover-probe.js'), 'utf8')
+          const result = String(await win.webContents.executeJavaScript(probe))
+          console.log('[hover-probe]', result)
+          clearTimeout(deadline)
+          // 探针自己给出结论：fail=0 才算通过（便于 scripts/probe-hover.mjs 汇总三档）
+          app.exit(/\bfail=0\b/.test(result) ? 0 : 1)
+        } catch (err) {
+          console.error('[hover-probe] 采样失败', err)
+          clearTimeout(deadline)
+          app.exit(1)
+        }
+        return
+      }
       try {
         if (process.env.VLLM_PET_SMOKE_DEBUG) {
           const dbg = await win.webContents.executeJavaScript(`(() => {

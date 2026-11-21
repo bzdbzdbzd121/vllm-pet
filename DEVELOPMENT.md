@@ -115,6 +115,14 @@ tests/*.test.mjs            node --test，89 个用例
 8. **计数只取"现算"的来源，不取推送快照**：SGLang 的 Prometheus gauge 空闲后会冻结（§4.10），
    所以 running/waiting/KV 以 `/v1/loads`（请求时现算）为准，`/metrics` 只提供 counter 与吞吐。
    新增后端时先分清：这个数字是"请求时现算"还是"最后一次推送"？后者不能用来判断"现在忙不忙"。
+9. **悬停命中用 `.r-hover` 的绘制图形，不要自己算坐标**：「鼠标悬停在宠物上变透明」靠一条 CSS 规则
+   `.pet-stage.hover-fade-enabled:has(.r-hover:hover) .pet-scale`（连同 `.pet-shadow`），
+   依据是 SVG 默认的 `pointer-events: visiblePainted` —— 只有真正画出来的地方才算命中。
+   - **不要**改成 `.pet-stage:hover` / `.pet-scale:hover` / `.r-svg:hover`：这些盒子与 SVG 根铺满
+     240×280 窗口，会让旁边的空白也触发（这就是最初那个 bug）。也不要改成包围盒/窗口矩形判断。
+   - **不要**在 `.r-hover` 里放铺满画布的大面积透明/不可见图形（命中看几何不看像素透明度）；
+     不可见装饰请加 `pointer-events: none` 或放到分组外。
+   - 命中相关的回归用 `node scripts/probe-hover.mjs`（附录 F 坐标表 × 0.6/1/2 三档缩放）。
 
 ## 4. ⚠️ 排坑指南（都踩过，别再踩）
 
@@ -204,6 +212,14 @@ npm run build     # ② Vite 构建（渲染层三个页面 → dist/）
 npm run smoke     # ③ 集成冒烟：隐藏窗口启动 Electron，截图 smoke-pet.png 后退出
 ```
 
+**悬停命中区回归（改了 `robot.css` 的悬停规则 / `pet.js` 的 setHoverFade / 皮肤 SVG 后跑）**：
+
+```bash
+npm run build && node scripts/probe-hover.mjs
+# 依次以 0.6 / 1 / 2 缩放启动隐藏窗口，把 scripts/hover-probe.js 注入页面逐点校对附录 F 坐标表
+# 输出：HOVER-PROBE scale=1 pass=17 fail=0；任一档失败则打印具体坐标与期望值并以非零退出
+```
+
 **冒烟环境变量**（主进程 `VLLM_PET_SMOKE=1` 时生效，配置用临时目录，不碰用户数据）：
 
 | 变量 | 作用 |
@@ -213,6 +229,7 @@ npm run smoke     # ③ 集成冒烟：隐藏窗口启动 Electron，截图 smok
 | `VLLM_PET_SMOKE_PAGE` | 加载页面（默认 `pet.html`，可设 `index.html` 截预览页） |
 | `VLLM_PET_SMOKE_SIZE` | 窗口尺寸，如 `1000x780` |
 | `VLLM_PET_SMOKE_DELAY` | did-finish-load 后延迟多少毫秒截图（默认 2500） |
+| `VLLM_PET_SMOKE_HOVER_PROBE` | `1` = 不截图，改为执行 `scripts/hover-probe.js` 并把结果打到 stdout（供 `scripts/probe-hover.mjs` 汇总；正常运行路径不受影响） |
 
 冒烟模式下主进程会打印每次状态推送（`[smoke] state = ... hint = ...`），方便确认状态流转。
 

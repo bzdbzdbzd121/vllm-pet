@@ -112,6 +112,7 @@ Config（主进程存于 `app.getPath('userData')/config.json`，默认值如下
   "thresholds": { "light": 1, "medium": 4, "heavy": 16, "cacheHeavy": 0.85 },
   "skin": "default-robot",
   "idleSleepMinutes": 10,
+  "hoverFade": { "enabled": true, "opacity": 0.4 },
   "window": { "alwaysOnTop": true, "clickThrough": false, "scale": 1, "opacity": 1, "x": null, "y": null }
 }
 ```
@@ -122,6 +123,7 @@ Config（主进程存于 `app.getPath('userData')/config.json`，默认值如下
 皮肤（Worker A 定义完整 schema，以下字段名固定，Worker B 的 `loadSkin` 按此读取用户皮肤目录）：
 
 - 内置皮肤位于 `src/renderer/skins/default-robot/`，通过 Vite `?raw` 内联打包（浏览器/桌面均可用）。
+
 - 用户皮肤位于 `<userData>/skins/<name>/skin.json`（+ 可选 SVG/PNG 资源文件）。
   `loadSkin(name)` 返回 `{ ...skinJson, assets: { [fileName]: dataUrl } }`，资源读不到时字段省略。
 - skin.json 固定顶层字段：`{ name, displayName, version, palette: {...}, animations: {...} }`。
