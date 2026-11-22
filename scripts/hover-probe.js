@@ -7,8 +7,9 @@
  *   HOVER-PROBE scale=2 pass=15 fail=2
  *   (120,232) 地面阴影中心 期望命中=false 实际=true
  *
- * 坐标表就是本文件 POINTS 里的 17 点（SVG viewBox 坐标，240×280）—— 它就是实现侧的坐标真值，
- * 改坐标请只改这里，并同步 `scripts/probe-hover.mjs` 的期望（两者共用同一份表）。
+ * 坐标表就是本文件 POINTS 里的 17 点（SVG viewBox 坐标，240×280）—— 它是**唯一数据源**：
+ * `scripts/probe-hover.mjs` 不持有任何坐标或期望值，只负责以 0.6/1/2 三档启动隐藏窗口、
+ * 调用本脚本、汇总各档结果（它只从结果行里解析 scale/pass/fail）。改坐标只改这里的 POINTS。
  *
  * 坐标换算用 SVG 的 getScreenCTM()（viewBox 单位 → 屏幕像素），而不是直接拿
  * `.pet-stage` 的矩形按比例换算：窗口窄于 240px（桌面版缩放 < 1）时，`.pet-stage` 会被
