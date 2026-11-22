@@ -29,20 +29,38 @@ function loadPetView(warns) {
     document: { createElement: () => { throw new Error('测试不应实例化 DOM') } },
     DOMParser: class {},
     XMLSerializer: class {},
+    window: makeEventTarget(),
     setTimeout,
     clearTimeout
   }
-  return vm.runInNewContext(`${src}\n;PetView`, sandbox)
+  sandbox.document = Object.assign(makeEventTarget(), sandbox.document, { hidden: false })
+  const PetView = vm.runInNewContext(`${src}\n;PetView`, sandbox)
+  return { PetView, win: sandbox.window, doc: sandbox.document }
 }
 
-/** 只在 Node 侧模拟 stage 的三个能力：CSS 变量写入、class 切换、.r-hover 查询 */
+/** 极简事件目标：记录监听器，便于手动派发（不引 DOM 库） */
+function makeEventTarget() {
+  const handlers = new Map()
+  return {
+    handlers,
+    addEventListener: (type, fn) => {
+      if (!handlers.has(type)) handlers.set(type, [])
+      handlers.get(type).push(fn)
+    },
+    dispatch: (type, event) => (handlers.get(type) || []).forEach((fn) => fn(event))
+  }
+}
+
+/** 只在 Node 侧模拟 stage 的能力：CSS 变量写入、class 切换、.r-hover 查询、事件绑定 */
 function makeStage({ hitRegion = true } = {}) {
   const props = new Map()
   const classes = new Set()
+  const target = makeEventTarget()
   const stage = {
     hitRegion,
     props,
     classes,
+    ...target,
     style: { setProperty: (k, v) => props.set(k, String(v)) },
     classList: {
       toggle: (name, on) => (on ? classes.add(name) : classes.delete(name)),
@@ -55,7 +73,7 @@ function makeStage({ hitRegion = true } = {}) {
 
 function makePet(opts = {}) {
   const warns = []
-  const PetView = loadPetView(warns)
+  const { PetView, win, doc } = loadPetView(warns)
   const stage = makeStage(opts)
   // 只取原型上的真实方法，构造函数依赖 document，不在此使用
   const pet = Object.assign(Object.create(PetView.prototype), {
@@ -64,10 +82,17 @@ function makePet(opts = {}) {
     stage,
     scaleWrap: { innerHTML: '' },
     shadowWrap: { innerHTML: '' },
-    _hoverWarned: false
+    _hoverWarned: false,
+    _hovering: false,
+    _hoverBound: false,
+    _hoverWindow: win, // 测试注入：由 _bindHoverFade 绑定的 window/document 等价物
+    _hoverDocument: doc
   })
-  return { pet, stage, warns }
+  return { pet, stage, warns, win, doc }
 }
+
+/** 构造一个「命中/不命中 .r-hover」的指针事件（完全模拟浏览器给的 e.target） */
+const pointerOn = (hit) => ({ target: { closest: (sel) => (hit && sel === '.r-hover' ? { classList: ['r-hover'] } : null) } })
 
 const settle = () => new Promise((r) => setTimeout(r, 0))
 
@@ -110,11 +135,10 @@ test('setHoverFade：class 只由开关决定，与不透明度无关', () => {
   assert.ok(stage.classes.has('hover-fade-enabled'), '字符串 "false" 不能关闭功能')
 })
 
-test('setHoverFade：不写内联 style.opacity，也不绑定鼠标事件（淡化交给 CSS）', () => {
+test('setHoverFade：不写行内 style.opacity（淡化只由 CSS 变量 + class 驱动）', () => {
   const { pet, stage } = makePet()
   pet.setHoverFade({ enabled: true, opacity: 0.4 })
   assert.equal(stage.style.opacity, undefined, '不得写入 style.opacity')
-  assert.equal(stage.addEventListener, undefined, '不得在 stage 上绑定鼠标事件')
 })
 
 /* ---------------- 缺 .r-hover：只告警一次 ---------------- */
@@ -229,8 +253,102 @@ test('preview-main.js：启动时应用一次，内嵌面板保存后再次应�
   assert.match(bodyOf(PREVIEW_MAIN, 'onSaved: async (saved) =>'), /pet\.setHoverFade\(saved\.hoverFade\)/, '保存回调必须应用最新配置')
 })
 
-test('pet.js 不在内部维护鼠标悬停状态，也不写行内不透明度', () => {
+test('pet.js 的命中判定只用 closest(\'.r-hover\')，且写行内不透明度被禁止', () => {
   const src = read('src/renderer/robot/pet.js')
-  assert.doesNotMatch(src, /addEventListener\(\s*['"]mouse(over|enter|move|leave)/, '不得用鼠标事件自己判定命中')
   assert.doesNotMatch(src, /style\.opacity\s*=/, '不得写行内不透明度')
+})
+
+/* ---------------- 指针事件锁存（抖动修复的核心） ---------------- */
+
+test('绑定：只在 stage 上绑 pointermove + pointerleave，不绑 pointerover/out（它们会在元素随动画变化时被派发）', () => {
+  const { pet, stage } = makePet()
+  pet._bindHoverFade()
+  assert.ok(stage.handlers.has('pointermove'), 'stage 上必须绑 pointermove')
+  assert.ok(stage.handlers.has('pointerleave'), 'stage 上必须绑 pointerleave')
+  for (const banned of ['pointerover', 'pointerout', 'mouseover', 'mouseout', 'mouseenter', 'mouseleave']) {
+    assert.ok(!stage.handlers.has(banned), `不得在 stage 上绑 ${banned}（指针未动、元素随动画变化时会被派发 → 抖动回来）`)
+  }
+  const src = read('src/renderer/robot/pet.js')
+  assert.doesNotMatch(src, /querySelector\(['"]\.r-hover['"]\)\.addEventListener/, '不得把监听挂到 .r-hover 本身（换肤会丢掉）')
+  assert.doesNotMatch(src, /elementFromPoint/, '不得用 elementFromPoint 轮询（仍会跟随动画）')
+})
+
+test('锁存：pointermove 按 closest(\'.r-hover\') 写 is-hovering，且状态未变时不重复写 DOM', () => {
+  const { pet, stage } = makePet()
+  pet._bindHoverFade()
+
+  stage.dispatch('pointermove', pointerOn(true))
+  assert.ok(stage.classes.has('is-hovering'), '指在本体上应加上 is-hovering')
+
+  let writes = 0
+  const rawToggle = stage.classList.toggle
+  stage.classList.toggle = (n, on) => { writes++; rawToggle(n, on) }
+  stage.dispatch('pointermove', pointerOn(true)) // 同一状态重复到达：不得再写 DOM
+  assert.equal(writes, 0, '状态未变时不应重写 class（否则每帧都摸 DOM）')
+
+  stage.dispatch('pointermove', pointerOn(false)) // 缝/空白/光晕环
+  assert.ok(!stage.classes.has('is-hovering'), '指到非 .r-hover 目标应清掉 is-hovering')
+})
+
+test('锁存：光晕环/头身缝这类「窄带」也只看事件那一刻的几何', () => {
+  const { pet, stage } = makePet()
+  pet._bindHoverFade()
+  // 光晕环（pointer-events:none → target 不是 .r-hover）
+  stage.dispatch('pointermove', pointerOn(false))
+  assert.ok(!stage.classes.has('is-hovering'))
+  // 头身缝里命中描边时为 true
+  stage.dispatch('pointermove', pointerOn(true))
+  assert.ok(stage.classes.has('is-hovering'))
+})
+
+test('复位：pointerleave / window.blur / 页面隐藏 都清除 is-hovering', () => {
+  const { pet, stage } = makePet()
+  pet._bindHoverFade()
+  for (const trigger of ['pointerleave', 'window-blur', 'visibility-hidden']) {
+    stage.dispatch('pointermove', pointerOn(true))
+    assert.ok(stage.classes.has('is-hovering'), `${trigger}：前置状态应为悬停`)
+    if (trigger === 'pointerleave') stage.dispatch('pointerleave', {})
+    if (trigger === 'window-blur') pet._hoverWindow.dispatch('blur', {})
+    if (trigger === 'visibility-hidden') { pet._hoverDocument.hidden = true; pet._hoverDocument.dispatch('visibilitychange', {}) }
+    assert.ok(!stage.classes.has('is-hovering'), `${trigger} 后必须清除 is-hovering（防残留淡化）`)
+  }
+})
+
+test('复位：关闭开关时清掉锁存，再开启不带回旧状态', () => {
+  const { pet, stage } = makePet()
+  pet._bindHoverFade()
+  pet.setHoverFade({ enabled: true })
+  stage.dispatch('pointermove', pointerOn(true))
+  assert.ok(stage.classes.has('is-hovering'))
+
+  pet.setHoverFade({ enabled: false })
+  assert.ok(!stage.classes.has('is-hovering'), '关闭开关必须同时移除 is-hovering')
+
+  pet.setHoverFade({ enabled: true })
+  assert.ok(!stage.classes.has('is-hovering'), '重新开启不得带关闭前的旧状态（等下一条指针事件）')
+})
+
+test('复位：换肤时清掉锁存（新皮肤几何不同，缺 .r-hover 时应静默失效）', async () => {
+  const { pet, stage, warns } = makePet()
+  pet._bindHoverFade()
+  pet.setHoverFade({ enabled: true })
+  stage.dispatch('pointermove', pointerOn(true))
+  assert.ok(stage.classes.has('is-hovering'))
+
+  stage.hitRegion = false
+  pet.applySkin({})
+  assert.ok(!stage.classes.has('is-hovering'), '换肤后必须清除锁存，由新几何重判')
+  await settle() // 告警是微任务里发的（换肤与 setHoverFade 常在同一次配置应用里）
+  assert.equal(warns.length, 1, '缺 .r-hover 的皮肤仍需提示一次')
+})
+
+test('锁存状态不参与动画：没有任何逐帧/定时重算（无 rAF/定时器/动画事件）', () => {
+  const src = read('src/renderer/robot/pet.js')
+  assert.doesNotMatch(src, /requestAnimationFrame/, '不得用逐帧重算命中区')
+  assert.doesNotMatch(src, /animationframe|transitionend/, '不得用动画事件重算命中区')
+})
+
+test('pet-main.js：锁屏/休眠时清除悬停锁存（避免恢复后残留淡化）', () => {
+  const body = bodyOf(PET_MAIN, 'bridge?.onPowerPause?.((paused) =>')
+  assert.match(body, /clearHoverFade\(\)/, 'onPowerPause 必须在暂停时调用 clearHoverFade()')
 })

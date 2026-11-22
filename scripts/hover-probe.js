@@ -23,8 +23,9 @@
  * 采样前先注入一次性样式冻结动画：天线光晕有脉冲（y 顶边 17.25~21），不冻结时
  * (132,36)「光晕环内、灯球外」这类贴边界的点会随帧抖动。
  *
- * 这里只验证几何命中（elementFromPoint + closest('.r-hover')），
- * 不验证 :hover 伪类与视觉过渡 —— 后者由阶段 2 的验收与手工矩阵覆盖。
+ * 这里只验证**几何命中**（elementFromPoint + closest('.r-hover')），不验证淡化状态机：
+ * 状态由指针事件锁存（pet.js 的 pointermove + closest），与伪类无关，需另一套
+ * 「指针不动、定时采样 opacity」的回归来覆盖。
  */
 (() => {
   const BASE_W = 240

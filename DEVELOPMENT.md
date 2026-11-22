@@ -115,14 +115,22 @@ tests/*.test.mjs            node --test，89 个用例
 8. **计数只取"现算"的来源，不取推送快照**：SGLang 的 Prometheus gauge 空闲后会冻结（§4.10），
    所以 running/waiting/KV 以 `/v1/loads`（请求时现算）为准，`/metrics` 只提供 counter 与吞吐。
    新增后端时先分清：这个数字是"请求时现算"还是"最后一次推送"？后者不能用来判断"现在忙不忙"。
-9. **悬停命中用 `.r-hover` 的绘制图形，不要自己算坐标**：「鼠标悬停在宠物上变透明」靠一条 CSS 规则
-   `.pet-stage.hover-fade-enabled:has(.r-hover:hover) .pet-scale`（连同 `.pet-shadow`），
-   依据是 SVG 默认的 `pointer-events: visiblePainted` —— 只有真正画出来的地方才算命中。
-   - **不要**改成 `.pet-stage:hover` / `.pet-scale:hover` / `.r-svg:hover`：这些盒子与 SVG 根铺满
-     240×280 窗口，会让旁边的空白也触发（这就是最初那个 bug）。也不要改成包围盒/窗口矩形判断。
+9. **悬停命中用 `.r-hover` 的绘制图形，由指针事件锁存，不要自己算坐标也不要交回 CSS `:hover`**：
+   「鼠标悬停在宠物上变透明」的状态由 `pet.js` 的 `pointermove` 处理器用
+   `e.target.closest('.r-hover')` 判定，写到舞台的 `.is-hovering` class；CSS 只负责
+   `.pet-stage.hover-fade-enabled.is-hovering .pet-scale/.pet-shadow { opacity: var(--hover-opacity) }`
+   与 160ms / 180ms 过渡。
+   - **不要**改回 `:has(.r-hover:hover)`（或 `.r-hover:hover`）：伪类会跟随命中测试**逐帧重算**，
+     而宠物自身的 bob/sway/celebrate 一直在移动轮廓，静止的指针会被扫过 → opacity 在设定值与 1
+     之间呼吸式明暗（实测 3 次/3.3s，最坏连续失效 2.4–3.9s，180ms 离开宽限盖不住）。
+   - **不要**改成 `.pet-stage:hover` / `.pet-scale:hover` / `.r-svg:hover` 或包围盒判断：这些盒子与
+     SVG 根铺满 240×280 窗口，会让旁边的空白也触发。
    - **不要**在 `.r-hover` 里放铺满画布的大面积透明/不可见图形（命中看几何不看像素透明度）；
      不可见装饰请加 `pointer-events: none` 或放到分组外。
-   - 命中相关的回归用 `node scripts/probe-hover.mjs`（附录 F 坐标表 × 0.6/1/2 三档缩放）。
+   - 复位路径必须齐全：`pointerleave`、`window.blur`、`visibilitychange`、`power:pause`、关闭开关、换肤
+     都要清 `.is-hovering`，否则会残留淡化。
+   - 命中相关的回归用 `node scripts/probe-hover.mjs`（几何）与「指针不动 3.3s 采样 opacity」
+     （状态机，见下节）。
 
 ## 4. ⚠️ 排坑指南（都踩过，别再踩）
 

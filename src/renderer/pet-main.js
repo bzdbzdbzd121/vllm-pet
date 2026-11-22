@@ -76,6 +76,8 @@ async function boot() {
   // 锁屏/系统休眠时主进程广播暂停：冻结所有动画（合成层动画一并停 tick）
   bridge?.onPowerPause?.((paused) => {
     pet.stage.classList.toggle('power-paused', !!paused)
+    // 锁屏/休眠时清掉悬停锁存：恢复后不会残留「一直淡化」
+    if (paused) pet.clearHoverFade()
   })
 
   // 浏览器 Mock 模式下未配置地址时自动弹出内嵌面板（桌面版由主进程打开设置窗口）

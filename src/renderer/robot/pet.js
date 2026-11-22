@@ -43,6 +43,8 @@ export class PetView {
     this.state = 'idle'
     this._celebrateTimer = 0
     this._hoverWarned = false
+    this._hovering = false
+    this._hoverBound = false
 
     this.stage = document.createElement('div')
     this.stage.className = 'pet-stage st-idle'
@@ -66,6 +68,7 @@ export class PetView {
     applySkinToStage(this.stage, skin)
     this.setScale(scale)
     this._applyBobDuration()
+    this._bindHoverFade()
   }
 
   /** @param {'idle'|'sleeping'|'connecting'|'busy-1'|'busy-2'|'busy-3'|'offline'} visualState */
@@ -159,12 +162,16 @@ export class PetView {
     this._applyBobDuration()
     // 换肤会整体替换本体 SVG：新皮肤可能没有 .r-hover，需重新检查命中区
     // （开关状态以 stage 上的 class 为单一来源，不另存副本）
+    // 锁存也要清：命中区几何变了，旧状态不再成立（缺钩子时应为不淡化）
+    this.clearHoverFade()
     if (this.stage.classList.contains('hover-fade-enabled')) this._warnIfNoHitRegion()
   }
 
   /**
-   * 悬停淡化：开关挂 class，不透明度写 CSS 变量。
-   * 命中判定与过渡全部交给 CSS（.r-hover:hover），这里不监听鼠标事件。
+   * 悬停淡化：开关挂 class，不透明度写 CSS 变量，命中状态由指针事件锁存。
+   * 为什么不用 CSS `:hover`（曾经的做法）：伪类由渲染引擎跟随命中测试逐帧重算，
+   * 而桌子自己一直在 bob/sway/celebrate，静止指针的状态就会跟着几何来回翻，
+   * 表现为 opacity 在设定值与 1 之间呼吸式抖动（实测最坏连续失效 2.4–3.9s）。
    * class 只由 enabled 决定：把滑块改成 100% 不需要增删 class，行为可预测。
    * @param {unknown} input config.hoverFade（畸形值由 normalizeHoverFade 收口）
    */
@@ -172,7 +179,43 @@ export class PetView {
     const { enabled, opacity } = normalizeHoverFade(input)
     this.stage.style.setProperty('--hover-opacity', String(opacity))
     this.stage.classList.toggle('hover-fade-enabled', enabled)
+    // 关闭时一并清掉锁存，否则「关→开」会把关闭前的悬停状态带回来
+    if (!enabled) this.clearHoverFade()
     if (enabled) this._warnIfNoHitRegion()
+  }
+
+  /**
+   * 绑定悬停判定所需的事件。只绑 pointermove + pointerleave：
+   * pointerover/pointerout 在「指针没动、元素随动画变化」时也可能被派发，会把抖动引回来。
+   * 监听挂在 stage 上：换肤只替换本体 SVG，挂在 .r-hover 上会丢。
+   */
+  _bindHoverFade() {
+    if (this._hoverBound) return
+    this._hoverBound = true
+    this.stage.addEventListener('pointermove', (e) => {
+      const target = e?.target
+      this._setHovering(!!(target && typeof target.closest === 'function' && target.closest('.r-hover')))
+    }, { passive: true })
+    // 指针离开舞台（含快速移出窗口）→ 复位
+    this.stage.addEventListener('pointerleave', () => this.clearHoverFade())
+    // 失焦 / 页面隐藏（最小化、切桌面、锁屏）→ 复位，避免回来时残留淡化
+    window.addEventListener('blur', () => this.clearHoverFade())
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.clearHoverFade()
+    })
+  }
+
+  /** 锁存悬停状态：只在指针事件里调用；状态未变时不重复写 DOM */
+  _setHovering(over) {
+    const next = !!over
+    if (next === this._hovering) return
+    this._hovering = next
+    this.stage.classList.toggle('is-hovering', next)
+  }
+
+  /** 清除悬停锁存（失焦/锁屏/页面隐藏/关闭开关/换肤时调用） */
+  clearHoverFade() {
+    this._setHovering(false)
   }
 
   /** 皮肤缺 .r-hover 时悬停不会生效：只提示一次，不报错 */

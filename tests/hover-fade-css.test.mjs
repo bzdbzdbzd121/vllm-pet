@@ -80,20 +80,21 @@ const RULES = parseRules(CSS)
 const BRANCHES = RULES.flatMap((rule) => splitTopLevel(rule.selector, ',').map((branch) => ({ branch, rule })))
 const declsOf = (rule) => decls(rule.body)
 
-/** 悬停淡化相关的规则：命中锚点、启用开关、以及任何使用 --hover-opacity 的规则 */
+/** 悬停淡化相关的规则：启用开关、锁存 class、以及任何使用 --hover-opacity 的规则 */
 const HOVER_RELATED = RULES.filter(
   (rule) =>
     rule.selector.includes('hover-fade-enabled') ||
-    rule.selector.includes(':has(.r-hover') ||
+    rule.selector.includes('is-hovering') ||
     declsOf(rule).some((d) => d.includes('var(--hover-opacity'))
 )
 
-const HOVER_BRANCH = /^\.pet-stage\.hover-fade-enabled:has\(\.r-hover:hover\)\s+\.pet-(scale|shadow)$/
+const HOVER_BRANCH = /^\.pet-stage\.hover-fade-enabled\.is-hovering\s+\.pet-(scale|shadow)$/
 
-test('命中：.r-hover:hover 通过独立分支分别淡化 .pet-scale 与 .pet-shadow', () => {
+test('命中：由锁存 class `.is-hovering` 通过独立分支分别淡化 .pet-scale 与 .pet-shadow', () => {
   for (const target of ['.pet-scale', '.pet-shadow']) {
-    const branch = BRANCHES.find((b) => b.branch === `.pet-stage.hover-fade-enabled:has(.r-hover:hover) ${target}`)
-    assert.ok(branch, `缺少独立分支："${`.pet-stage.hover-fade-enabled:has(.r-hover:hover) ${target}`}"（逗号分组里混进 :hover 之类的改动必须被抓住）`)
+    const expected = `.pet-stage.hover-fade-enabled.is-hovering ${target}`
+    const branch = BRANCHES.find((b) => b.branch === expected)
+    assert.ok(branch, `缺少独立分支："${expected}"（逗号分组里混进 :hover 之类的改动必须被抓住）`)
     assert.match(branch.branch, HOVER_BRANCH)
     assert.equal(subjectOf(branch.branch), target, `该分支的主体必须正好是 ${target}`)
 
@@ -109,6 +110,7 @@ test('过渡：挂在「未触发也成立」的独立分支上，160ms 淡出 +
     assert.ok(branch, `缺少常驻过渡分支："${`.pet-stage.hover-fade-enabled ${target}`}"`)
     assert.equal(subjectOf(branch.branch), target)
     assert.ok(!branch.branch.includes(':hover'), '过渡规则不能依赖 :hover，否则离开悬停时没有过渡可跑')
+    assert.ok(!branch.branch.includes('is-hovering'), '过渡规则必须常在（不得依赖锁存 class），否则离开时无过渡')
     assert.ok(
       declsOf(branch.rule).includes('transition:opacity 160ms ease 180ms'),
       `${target} 过渡须是 "opacity 160ms ease 180ms"`
@@ -156,13 +158,14 @@ test('不得用舞台/缩放层/SVG 根做命中判定（旁边空白误触发�
   const forbidden = /^\.(pet-stage|pet-scale|r-svg)(\.[\w-]+)*(::?[\w-]+(\([^)]*\))?)*:hover/
   const hit = BRANCHES.filter(({ branch }) => forbidden.test(branch) || /\.pet-stage:has\(:hover\)/.test(branch))
   assert.deepEqual(hit.map((b) => b.branch), [], '出现了以舞台/缩放层/SVG 根为命中区的规则')
+})
 
-  // :has() 的参数只能是 .r-hover（可带 :hover），不能放宽到别的元素
-  const args = [...CSS_RULES_ONLY.matchAll(/:has\(([^)]*)\)/g)].map((m) => m[1].trim())
-  assert.ok(args.length > 0, '找不到 :has() 悬停规则')
-  for (const arg of args) {
-    assert.match(arg, /^\.r-hover(\s*:hover|:hover)?$/, `:has() 参数只允许锚定 .r-hover，实际：${arg}`)
-  }
+test('命中判定不得再用 :has()/容器 :hover（宠物自主动画会让它们逐帧翻转 → 呼吸式明暗）', () => {
+  // 硬护栏：整份 CSS 里不得出现任何 :has( —— 命中状态改由指针事件锁存到 .is-hovering
+  const hasArgs = [...CSS_RULES_ONLY.matchAll(/:has\(([^)]*)\)/g)].map((m) => m[0])
+  assert.deepEqual(hasArgs, [], `robot.css 不得再用 :has() 作命中判定（实测会抖动）：${hasArgs.join(' ')}`)
+  // 也不得拿 .r-hover 的 :hover 伪类（Pseudo-class 依旧会随动画重算）
+  assert.doesNotMatch(CSS_RULES_ONLY, /\.r-hover\s*:hover/, '不得用 .r-hover:hover 作命中判定')
 })
 
 test('天线光晕排除出命中区：柔光不可见却能触发，属于精度漏洞', () => {
