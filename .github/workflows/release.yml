@@ -11,7 +11,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             flags: --mac dmg zip --x64 --arm64
             artifact-glob: |
               out/*.dmg
