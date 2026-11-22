@@ -116,10 +116,14 @@ tests/*.test.mjs            node --test，89 个用例
    所以 running/waiting/KV 以 `/v1/loads`（请求时现算）为准，`/metrics` 只提供 counter 与吞吐。
    新增后端时先分清：这个数字是"请求时现算"还是"最后一次推送"？后者不能用来判断"现在忙不忙"。
 9. **悬停命中用 `.r-hover` 的绘制图形，由指针事件锁存，不要自己算坐标也不要交回 CSS `:hover`**：
-   「鼠标悬停在宠物上变透明」的状态由 `pet.js` 的 `pointermove` 处理器用
+   「鼠标悬停在宠物上变透明」的状态由 `pet.js` 在指针事件里用
    `e.target.closest('.r-hover')` 判定，写到舞台的 `.is-hovering` class；CSS 只负责
    `.pet-stage.hover-fade-enabled.is-hovering .pet-scale/.pet-shadow { opacity: var(--hover-opacity) }`
    与 160ms / 180ms 过渡。
+   - `pointermove` 是主路径；`pointerover` **只吃一次**（加载/窗口重新获得焦点时指针可能已经
+     停在本体上，此时不会再有 pointermove），吃完即解除武装 —— 因为 Chromium 在「指针没动、
+     元素随动画变化」时也会派发 pointerover，每次都采信就等于把抖动引回来（实测 idle 3–5 次/3.3s、
+     celebrate 13 次）。
    - **不要**改回 `:has(.r-hover:hover)`（或 `.r-hover:hover`）：伪类会跟随命中测试**逐帧重算**，
      而宠物自身的 bob/sway/celebrate 一直在移动轮廓，静止的指针会被扫过 → opacity 在设定值与 1
      之间呼吸式明暗（实测 3 次/3.3s，最坏连续失效 2.4–3.9s，180ms 离开宽限盖不住）。
@@ -127,10 +131,11 @@ tests/*.test.mjs            node --test，89 个用例
      SVG 根铺满 240×280 窗口，会让旁边的空白也触发。
    - **不要**在 `.r-hover` 里放铺满画布的大面积透明/不可见图形（命中看几何不看像素透明度）；
      不可见装饰请加 `pointer-events: none` 或放到分组外。
-   - 复位路径必须齐全：`pointerleave`、`window.blur`、`visibilitychange`、`power:pause`、关闭开关、换肤
-     都要清 `.is-hovering`，否则会残留淡化。
-   - 命中相关的回归用 `node scripts/probe-hover.mjs`（几何）与「指针不动 3.3s 采样 opacity」
-     （状态机，见下节）。
+   - 复位路径必须齐全：`pointerleave`、`pointercancel`（触摸被打断）、`window.blur`、`visibilitychange`、
+     `power:pause`、关闭开关、换肤都要清 `.is-hovering`，否则会残留淡化。
+   - 命中相关的回归用 `node scripts/probe-hover.mjs`（几何）与「指针不动采样 opacity」
+     （状态机：指针只移动一次后不再发事件，150ms 采样 `getComputedStyle('.pet-scale').opacity`
+     3.3s，`|Δ|>0.05` 的次数必须为 0）。
 
 ## 4. ⚠️ 排坑指南（都踩过，别再踩）
 
@@ -224,7 +229,7 @@ npm run smoke     # ③ 集成冒烟：隐藏窗口启动 Electron，截图 smok
 
 ```bash
 npm run build && node scripts/probe-hover.mjs
-# 依次以 0.6 / 1 / 2 缩放启动隐藏窗口，把 scripts/hover-probe.js 注入页面逐点校对附录 F 坐标表
+# 依次以 0.6 / 1 / 2 缩放启动隐藏窗口，把 scripts/hover-probe.js 注入页面逐点校对它的 POINTS 坐标表
 # 输出：HOVER-PROBE scale=1 pass=17 fail=0；任一档失败则打印具体坐标与期望值并以非零退出
 ```
 

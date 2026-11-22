@@ -85,6 +85,7 @@ function makePet(opts = {}) {
     _hoverWarned: false,
     _hovering: false,
     _hoverBound: false,
+    _hoverOverArmed: false,
     _hoverWindow: win, // 测试注入：由 _bindHoverFade 绑定的 window/document 等价物
     _hoverDocument: doc
   })
@@ -260,17 +261,75 @@ test('pet.js 的命中判定只用 closest(\'.r-hover\')，且写行内不透明
 
 /* ---------------- 指针事件锁存（抖动修复的核心） ---------------- */
 
-test('绑定：只在 stage 上绑 pointermove + pointerleave，不绑 pointerover/out（它们会在元素随动画变化时被派发）', () => {
+test('绑定：在 stage 上绑 pointermove + pointerover（进入判定）与 pointerleave + pointercancel（复位）', () => {
   const { pet, stage } = makePet()
   pet._bindHoverFade()
-  assert.ok(stage.handlers.has('pointermove'), 'stage 上必须绑 pointermove')
-  assert.ok(stage.handlers.has('pointerleave'), 'stage 上必须绑 pointerleave')
-  for (const banned of ['pointerover', 'pointerout', 'mouseover', 'mouseout', 'mouseenter', 'mouseleave']) {
+  for (const required of ['pointermove', 'pointerover', 'pointerleave', 'pointercancel']) {
+    assert.ok(stage.handlers.has(required), `stage 上必须绑 ${required}`)
+  }
+  // 边界事件只做「进入」，不能用 pointerout 做「离开」：动画把元素移开时边界事件会反复试探
+  for (const banned of ['pointerout', 'mouseover', 'mouseout', 'mouseenter', 'mouseleave']) {
     assert.ok(!stage.handlers.has(banned), `不得在 stage 上绑 ${banned}（指针未动、元素随动画变化时会被派发 → 抖动回来）`)
   }
   const src = read('src/renderer/robot/pet.js')
-  assert.doesNotMatch(src, /querySelector\(['"]\.r-hover['"]\)\.addEventListener/, '不得把监听挂到 .r-hover 本身（换肤会丢掉）')
+  assert.doesNotMatch(src, /querySelector\(['\"]\.r-hover['\"]\)\.addEventListener/, '不得把监听挂到 .r-hover 本身（换肤会丢掉）')
   assert.doesNotMatch(src, /elementFromPoint/, '不得用 elementFromPoint 轮询（仍会跟随动画）')
+})
+
+test('开机即悬停：加载后指针已停在本体上时，一个 pointerover 就能建立锁存', () => {
+  const { pet, stage } = makePet()
+  pet._bindHoverFade()
+  assert.ok(!stage.classes.has('is-hovering'), '初始不悬停')
+
+  // 页面刚加载时不会先有 pointermove，浏览器只会补一个 pointerover
+  stage.dispatch('pointerover', pointerOn(true))
+  assert.ok(stage.classes.has('is-hovering'), 'pointerover 落在 .r-hover 上必须立即建立锁存（否则启动时指针已在宠物上却不淡化）')
+  assert.equal(pet._hovering, true)
+})
+
+test('开机即悬停：指针不在本体上时，pointerover 不得凭空开锁存', () => {
+  const { pet, stage } = makePet()
+  pet._bindHoverFade()
+  stage.dispatch('pointerover', pointerOn(false))
+  assert.ok(!stage.classes.has('is-hovering'), 'pointerover 落在非 .r-hover 目标上不得开锁存')
+  assert.equal(pet._hovering, false)
+})
+
+test('pointerover 只吃一次：后续边界事件（动画把元素扫过静止指针时会被派发）不得翻转锁存', () => {
+  const { pet, stage } = makePet()
+  pet._bindHoverFade()
+
+  stage.dispatch('pointerover', pointerOn(true)) // 进场（加载后指针已在本体上）
+  assert.ok(stage.classes.has('is-hovering'))
+
+  // 之后动画不断把轮廓扫过/扫离静止指针，浏览器会补发 pointerover —— 必须全部忽略
+  for (let i = 0; i < 6; i++) {
+    stage.dispatch('pointerover', pointerOn(false))
+    assert.ok(stage.classes.has('is-hovering'), '已解除武装后 pointerover 不得改成不悬停（否则就是抖动）')
+    stage.dispatch('pointerover', pointerOn(true))
+    assert.ok(stage.classes.has('is-hovering'))
+  }
+  assert.equal(pet._hovering, true)
+})
+
+test('pointerover 在 window.blur / 页面隐藏后重新武装一次（切回窗口时指针可能已在本体上）', () => {
+  const { pet, stage } = makePet()
+  pet._bindHoverFade()
+  stage.dispatch('pointerover', pointerOn(true))
+  assert.ok(stage.classes.has('is-hovering'))
+
+  pet._hoverWindow.dispatch('blur', {})
+  assert.ok(!stage.classes.has('is-hovering'), 'blur 必须复位')
+  stage.dispatch('pointerover', pointerOn(true))
+  assert.ok(stage.classes.has('is-hovering'), 'blur 后应重新允许一次 pointerover 建立锁存')
+
+  // 页面隐藏后同样重新武装
+  pet._hoverDocument.hidden = true
+  pet._hoverDocument.dispatch('visibilitychange', {})
+  assert.ok(!stage.classes.has('is-hovering'))
+  pet._hoverDocument.hidden = false
+  stage.dispatch('pointerover', pointerOn(true))
+  assert.ok(stage.classes.has('is-hovering'))
 })
 
 test('锁存：pointermove 按 closest(\'.r-hover\') 写 is-hovering，且状态未变时不重复写 DOM', () => {
@@ -301,16 +360,18 @@ test('锁存：光晕环/头身缝这类「窄带」也只看事件那一刻的�
   assert.ok(stage.classes.has('is-hovering'))
 })
 
-test('复位：pointerleave / window.blur / 页面隐藏 都清除 is-hovering', () => {
+test('复位：pointerleave / pointercancel / window.blur / 页面隐藏 都清除 is-hovering', () => {
   const { pet, stage } = makePet()
   pet._bindHoverFade()
-  for (const trigger of ['pointerleave', 'window-blur', 'visibility-hidden']) {
+  for (const trigger of ['pointerleave', 'pointercancel', 'window-blur', 'visibility-hidden']) {
     stage.dispatch('pointermove', pointerOn(true))
     assert.ok(stage.classes.has('is-hovering'), `${trigger}：前置状态应为悬停`)
     if (trigger === 'pointerleave') stage.dispatch('pointerleave', {})
+    if (trigger === 'pointercancel') stage.dispatch('pointercancel', {}) // 触摸被系统打断（滚动/来电等）
     if (trigger === 'window-blur') pet._hoverWindow.dispatch('blur', {})
     if (trigger === 'visibility-hidden') { pet._hoverDocument.hidden = true; pet._hoverDocument.dispatch('visibilitychange', {}) }
     assert.ok(!stage.classes.has('is-hovering'), `${trigger} 后必须清除 is-hovering（防残留淡化）`)
+    assert.equal(pet._hovering, false, `${trigger} 后内部锁存位也应复位`)
   }
 })
 

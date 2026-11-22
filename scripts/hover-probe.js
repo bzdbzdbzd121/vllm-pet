@@ -7,7 +7,8 @@
  *   HOVER-PROBE scale=2 pass=15 fail=2
  *   (120,232) 地面阴影中心 期望命中=false 实际=true
  *
- * 坐标表就是方案附录 F 的表（SVG viewBox 坐标，240×280）。
+ * 坐标表就是本文件 POINTS 里的 17 点（SVG viewBox 坐标，240×280）—— 它就是实现侧的坐标真值，
+ * 改坐标请只改这里，并同步 `scripts/probe-hover.mjs` 的期望（两者共用同一份表）。
  *
  * 坐标换算用 SVG 的 getScreenCTM()（viewBox 单位 → 屏幕像素），而不是直接拿
  * `.pet-stage` 的矩形按比例换算：窗口窄于 240px（桌面版缩放 < 1）时，`.pet-stage` 会被
@@ -24,8 +25,8 @@
  * (132,36)「光晕环内、灯球外」这类贴边界的点会随帧抖动。
  *
  * 这里只验证**几何命中**（elementFromPoint + closest('.r-hover')），不验证淡化状态机：
- * 状态由指针事件锁存（pet.js 的 pointermove + closest），与伪类无关，需另一套
- * 「指针不动、定时采样 opacity」的回归来覆盖。
+ * 状态由指针事件锁存（pet.js 的 pointermove/pointerover + closest），与伪类无关，需另一套
+ * 「指针不动、定时采样 opacity」的回归来覆盖（见 DEVELOPMENT.md 设计决策 9）。
  */
 (() => {
   const BASE_W = 240

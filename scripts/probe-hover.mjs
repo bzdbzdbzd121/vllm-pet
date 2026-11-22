@@ -3,7 +3,8 @@
  * probe-hover.mjs — 悬停命中区精度探针运行器
  *
  * 依次以 0.6 / 1 / 2 三档体型缩放启动隐藏的 Electron 窗口，把 scripts/hover-probe.js
- * 注入渲染页逐点核对（坐标表见方案附录 F），汇总三档结果；任一档失败则以非零退出。
+ * 注入渲染页逐点核对（坐标表就是 scripts/hover-probe.js 里的 POINTS），汇总三档结果；
+ * 任一档失败则以非零退出。
  *
  * 前置：先 `npm run build`（与 scripts/smoke.mjs 一致）。
  * 用法：node scripts/probe-hover.mjs

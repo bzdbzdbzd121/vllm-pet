@@ -185,23 +185,42 @@ export class PetView {
   }
 
   /**
-   * 绑定悬停判定所需的事件。只绑 pointermove + pointerleave：
-   * pointerover/pointerout 在「指针没动、元素随动画变化」时也可能被派发，会把抖动引回来。
-   * 监听挂在 stage 上：换肤只替换本体 SVG，挂在 .r-hover 上会丢。
+   * 绑定悬停判定所需的事件。监听挂在 stage 上：换肤只替换本体 SVG，挂在 .r-hover 上会丢。
+   *
+   * - `pointermove`：指针移动时的判定（主路径）
+   * - `pointerover`：**只吃一次**（加载/窗口重新获得焦点时指针可能已经停在本体上，此时不会有
+   *   pointermove）。为什么要限量：Chromium 在「指针没动、元素随动画变化」时也会派发 pointerover，
+   *   每次都采信就等于把抖动引回来（实测 idle 3–5 次/3.3s、celebrate 13 次）。
+   *   所以进场后立即解除武装，后续只由 pointermove 驱动状态。
+   * - 离开/取消：pointerleave、pointercancel（触摸被打断）→ 复位。
+   * - 窗口级：blur、页面隐藏 → 复位并**重新武装**一次 pointerover（切回窗口时可能已在本体上）。
    */
   _bindHoverFade() {
     if (this._hoverBound) return
     this._hoverBound = true
-    this.stage.addEventListener('pointermove', (e) => {
+    this._hoverOverArmed = true
+    const settle = (e) => {
       const target = e?.target
       this._setHovering(!!(target && typeof target.closest === 'function' && target.closest('.r-hover')))
-    }, { passive: true })
-    // 指针离开舞台（含快速移出窗口）→ 复位
+    }
+    this.stage.addEventListener('pointermove', settle, { passive: true })
+    this.stage.addEventListener('pointerover', (e) => {
+      if (!this._hoverOverArmed) return
+      this._hoverOverArmed = false
+      settle(e)
+    })
+    // 指针离开舞台（含快速移出窗口）、触摸被系统打断（pointercancel）→ 复位
     this.stage.addEventListener('pointerleave', () => this.clearHoverFade())
-    // 失焦 / 页面隐藏（最小化、切桌面、锁屏）→ 复位，避免回来时残留淡化
-    window.addEventListener('blur', () => this.clearHoverFade())
+    this.stage.addEventListener('pointercancel', () => this.clearHoverFade())
+    // 失焦 / 页面隐藏（最小化、切桌面、锁屏）→ 复位，并允许下个 pointerover 重新建立
+    window.addEventListener('blur', () => {
+      this.clearHoverFade()
+      this._hoverOverArmed = true
+    })
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) this.clearHoverFade()
+      if (!document.hidden) return
+      this.clearHoverFade()
+      this._hoverOverArmed = true
     })
   }
 
