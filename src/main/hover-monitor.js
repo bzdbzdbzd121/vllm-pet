@@ -148,8 +148,12 @@ export function createHoverMonitor({
     } catch { /* 宿主回调失败不影响 */ }
   }
 
-  /** 采样一次；异常/非有限 → fail 并返回 null */
-  const sample = () => {
+  /**
+   * 采样一次；异常/非有限 → fail 并返回 null。
+   * `note: false` 用于握手（sync）：只取「此刻」的值，不计入存活证据 —— 否则一次握手采样
+   * 就能凑满「≥2 个不同读数」，把权威规则绕过去。
+   */
+  const sample = ({ note = true } = {}) => {
     let cursor
     let bounds
     try {
@@ -164,13 +168,15 @@ export function createHoverMonitor({
       return null
     }
     // 存活证据：同一会话里出现足够多的不同读数，才承认这个源「活着」（冻结源永远拿不到）
-    const key = `${cursor.x},${cursor.y}`
-    if (key !== lastReadingKey) {
-      lastReadingKey = key
-      readings.add(key)
-      if (!source && readings.size >= HOVER_MIN_DISTINCT_READINGS) {
-        source = 'poller'
-        seedActive = false
+    if (note) {
+      const key = `${cursor.x},${cursor.y}`
+      if (key !== lastReadingKey) {
+        lastReadingKey = key
+        readings.add(key)
+        if (!source && readings.size >= HOVER_MIN_DISTINCT_READINGS) {
+          source = 'poller'
+          seedActive = false
+        }
       }
     }
     if (!isBox(bounds)) return null
@@ -258,11 +264,17 @@ export function createHoverMonitor({
       return true
     },
 
-    /** 页面（重新）加载后握手：强制重发一次当前光标，绕过去重 */
+    /**
+     * 页面（重新）加载后握手 / 主动拉取：**单次采样**后强制重发一次当前光标（绕过去重）。
+     * 为什么不能直接返回缓存：事件源会话里轮询已经停了（running=false），缓存是上一次推送的残值；
+     * 页面重载后若光标已移出窗口，拿残值就会「宠物驻留淡化」，违反 fail-closed。
+     * 单次采样不重启定时器、也不计入存活证据。
+     * @returns {{nx:number,ny:number}|null} 此刻的光标（会话未开始/采样失败 → null）
+     */
     sync() {
-      if (!supported || !sessionActive || !running) return lastPayload
-      const payload = sample()
-      if (!running) return null
+      if (!supported || !sessionActive) return null
+      const payload = sample({ note: false })
+      if (!sessionActive) return null // 采样失败：fail() 已清状态并通知降级
       emit(payload, true)
       return payload
     },

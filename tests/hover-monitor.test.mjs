@@ -281,11 +281,79 @@ test('sync（did-finish-load 握手）：强制重发当前光标，即使值没
   assert.equal(monitor.getState().cursor.nx, sent[count].nx, 'getState 提供给渲染层主动拉取')
 })
 
-test('sync（会话未运行时）：不发消息，但仍能给出最近一次状态', () => {
+test('sync（会话未开始）：不采样、不发送（不是「未运行」，事件源会话仍要发）', () => {
   const { monitor, sent } = makeMonitor({ cursor: inside })
   assert.deepEqual(monitor.getState().cursor, null)
+  assert.equal(monitor.sync(), null)
+  assert.deepEqual(sent, [], '会话没开始就没什么可握手的')
+})
+
+test('sync 在事件源会话里必须重采样（不得交出种子/上次推送的残值）', () => {
+  let pos = inside()
+  const { monitor, sent } = makeMonitor({ cursor: () => pos })
+  monitor.start()
+  assert.deepEqual(sent, [{ nx: 0.5, ny: 0.5 }], '前提：种子已发')
+  monitor.reportEvent({ hasCoords: true })
+  assert.equal(monitor.getState().source, 'events', '前提：事件源已取得权威')
+  assert.equal(monitor.isRunning(), false, '前提：事件源会话里轮询已停（这正是缺陷场景）')
+
+  pos = { x: 1200, y: 800 } // 光标已移到窗口外
+  const payload = monitor.sync()
+  assert.equal(payload, null, 'sync 必须按此刻光标采样（窗口外 → null）')
+  assert.equal(sent[sent.length - 1], null, '必须把 null 推出去（清状态），不能沿用种子值')
+  assert.equal(monitor.getState().cursor, null, '内部状态也要更新，否则握手继续读到残值')
+  assert.equal(monitor.isRunning(), false, 'sync 不得重启轮询')
+  assert.equal(monitor.getState().source, 'events', 'sync 不得改变权威')
+})
+
+test('sync 采样失败 → 返回 null、清状态、停轮询、不抛（fail-closed）', () => {
+  let boom = false
+  const { monitor, sent, logs } = makeMonitor({
+    cursor: () => {
+      if (boom) throw new Error('Wayland: no global cursor')
+      return inside()
+    }
+  })
+  monitor.start()
+  monitor.reportEvent({ hasCoords: true })
+  boom = true
+  assert.doesNotThrow(() => monitor.sync())
+  assert.equal(monitor.sync(), null, '采样失败必须给 null（不能给残值）')
+  assert.equal(sent[sent.length - 1], null, '失败也要把状态清掉')
+  assert.equal(monitor.isRunning(), false)
+  assert.equal(monitor.getState().degraded, true)
+  assert.equal(logs.length, 1, '只记一次日志')
+})
+
+test('sync 的单次采样不计入存活证据（握手不能绕过权威规则）', () => {
+  let pos = inside()
+  const { monitor, clock } = makeMonitor({ cursor: () => pos })
+  monitor.start() // 第 1 个读数（种子）
+  pos = { x: BOUNDS.x + 130, y: BOUNDS.y + 140 } // 第 2 个不同读数
   monitor.sync()
-  assert.deepEqual(sent, [])
+  assert.equal(monitor.getState().source, null, 'sync 采样后仍不得因此取得权威')
+  clock.advance(100) // 真正的轮询采样才算
+  assert.equal(monitor.getState().source, 'poller', '轮询采样出现 ≥2 个不同读数才授予权威')
+})
+
+function bodyOfFn(src, marker) {
+  const at = src.indexOf(marker)
+  assert.notEqual(at, -1, `找不到 ${marker}`)
+  const open = src.indexOf('{', at)
+  let depth = 0
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(open + 1, i) }
+  }
+  throw new Error(`${marker} 花括号不配对`)
+}
+
+test('握手通道 hover:cursor:get 必须复用 sync 的实时采样，不得返回缓存光标', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'src/main/main.js'), 'utf8')
+  const body = bodyOfFn(src, "ipcMain.handle('hover:cursor:get'")
+  assert.match(body, /hoverMonitor[\s\S]{0,60}sync\(\)/, '必须调用 hoverMonitor.sync() 做单次采样')
+  assert.doesNotMatch(body, /cursor:\s*state\.cursor/, '不得直接返回 getState().cursor 的残值')
+  assert.match(body, /cursor:\s*cursor \?\? null/, '返回的必须是用采样结果（失败 → null）')
 })
 
 /* ---------------- 运行条件（Linux 恒关闭） ---------------- */

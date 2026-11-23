@@ -383,10 +383,14 @@ function registerIpc() {
   })
   // 穿透悬停：渲染层启动/重载后主动拉取一次（避免「启动时光标已在宠物上却不淡化」）
   ipcMain.handle('hover:cursor:get', () => {
+    // 握手必须拿到「此刻」的光标：复用 sync 的单次采样（不重启轮询、不加权威）。
+    // 不能直接返回 getState().cursor —— 事件源会话里轮询已停，那是上一次推送的残值，
+    // 页面重载后光标已移出窗口时会“驻留淡化”。
+    const cursor = hoverMode && hoverMonitor ? hoverMonitor.sync() : null
     const state = hoverMonitor?.getState?.() || {}
     return {
       clickThrough: hoverMode,
-      cursor: state.cursor ?? null,
+      cursor: cursor ?? null,
       // 调试/验收用：来源与是否在轮询（渲染层不依赖这两个字段）
       source: state.source ?? null,
       running: !!state.running
