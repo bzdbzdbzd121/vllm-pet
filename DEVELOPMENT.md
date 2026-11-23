@@ -147,7 +147,7 @@ tests/*.test.mjs            node --test，89 个用例
 10. **穿透下的悬停：平台分级 + 存活证明，不要「所有平台统一轮询」**：
    窗口一旦 `setIgnoreMouseEvents(true)`，很多平台就收不到鼠标事件；更麻烦的是「主进程读到的光标位置」
    本身可能冻结（读数不变既可能是光标停着，也可能是 API 卡住）。
-   **实测结论（本仓 Linux/X11 + Electron 43.1.1，2025-11 recheck）**：
+   **实测结论（本仓 Linux/X11 + Electron 43.1.1，2026-11 recheck）**：
    - S1：`setIgnoreMouseEvents(true)` 在 X11 上**没有改变 X Input Shape**（仍是整窗矩形），点击被吞 ——
      既不进宠物也不落到底层窗口；`forward:true` 同样无效。对应上游 `electron#52456`
      （43.2.0 报告、43.7.1 未修、42.7.0 正常）。**穿透本身在 Linux 就是坏的，与本功能无关。**
@@ -274,10 +274,13 @@ npm run build && node scripts/probe-hover.mjs
   仍正确），空白/容器外用容器坐标，阴影/文字点取各自 DOM 框中心。
 - 通过时通常是 `pass=14`：默认状态文字较长，会把矩形撑宽，`(20,140)`/`(225,140)` 这两个
   「左右空白」反例已不成立，探针会**显式跳过**并打印原因（跳过不计入 fail）。
-- 冻结动画的前提：探针先注入 `animation-play-state: paused`，避免 bob/sway 让点位飘。
-- 抖动不回归用「指针只移动一次后不再发事件」的口径：150ms 采样 `getComputedStyle('.pet-scale').opacity`
-  3.3s，`|Δ|>0.05` 的次数必须为 0（`docs`/脚本见提交历史；也可用 `scripts/hover-probe.js` 的
-  `scale=1` 档连续两次运行对比）。
+- 冻结动画的前提：探针先往页面注入一条样式
+  `.pet-scale,.r-head,.r-arm,.r-antenna-glow,.r-shadow{animation:none!important}` ——
+  是 `animation: none`（**移除**动画，元素回到基础状态），不是 `animation-play-state: paused`
+  （那是停在当前相位）。因为矩形取的是「当前帧包围盒」，不冻结会让采样点随 bob/sway 的相位飘。
+- 抖动不回归是**另一套口径**，探针替代不了（动画已被 `animation: none` 移除，探针看不到抖动）：
+  指针只移动一次后不再发事件，每 150ms 采样 `getComputedStyle('.pet-scale').opacity` 共 3.3s，
+  `|Δ|>0.05` 的次数必须为 0。
 
 **冒烟环境变量**（主进程 `VLLM_PET_SMOKE=1` 时生效，配置用临时目录，不碰用户数据）：
 
