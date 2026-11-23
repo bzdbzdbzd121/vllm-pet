@@ -51,7 +51,9 @@ function makeEl({ rect: r = rect(0, 0, 0, 0), textContent = '' } = {}) {
   return el
 }
 
-function loadPet({ boxes = {}, showStatus = true, statusText = '空闲中', warn = () => {} } = {}) {
+function loadPet({ boxes: sharedBoxes = {}, showStatus = true, statusText = '空闲中', warn = () => {} } = {}) {
+  // 浅拷贝：用例会平移几何（模拟滚动），不能污染共享的 BOXES
+  const boxes = { ...sharedBoxes }
   const handlers = new Map()
   const doc = {
     hidden: false,
@@ -78,7 +80,7 @@ function loadPet({ boxes = {}, showStatus = true, statusText = '空闲中', warn
   }
   container.dispatch = (type, event) => (handlers.get(type) || []).forEach((fn) => fn(event))
 
-  const win = { addEventListener: (t, fn) => { handlers.set(`win:${t}`, [fn]) } }
+  const win = { addEventListener: (t, fn) => { handlers.set(`win:${t}`, [...(handlers.get(`win:${t}`) || []), fn]) } }
   const resizeObservers = []
   class FakeResizeObserver {
     constructor(cb) { this.cb = cb; this.targets = []; resizeObservers.push(this) }
@@ -124,7 +126,14 @@ function loadPet({ boxes = {}, showStatus = true, statusText = '空闲中', warn
   if (showStatus) pet.stage.classList.add('show-status')
   pet.setStatusLine(statusText)
   const fireResize = () => resizeObservers.filter((o) => o.targets.includes(container)).forEach((o) => o.fire())
-  return { pet, container, doc, win, resizeObservers, fireResize }
+  // 把世界整体上移 dy（等价于页面向下滚动 dy）：所有客户端矩形同步平移，尺寸不变
+  const scrollBy = (dy) => {
+    const shift = (r) => (r ? rect(r.left, r.top - dy, r.right, r.bottom - dy) : r)
+    container.rect = shift(container.getBoundingClientRect())
+    for (const k of ['container', 'scaleBox', 'art', 'shadow', 'status']) if (boxes[k]) boxes[k] = shift(boxes[k])
+  }
+  const fireScroll = (target = doc) => (handlers.get('win:scroll') || []).forEach((fn) => fn({ type: 'scroll', target }))
+  return { pet, container, doc, win, boxes, resizeObservers, fireResize, scrollBy, fireScroll }
 }
 
 const pointer = (x, y, target = { closest: () => null }) => ({ clientX: x, clientY: y, target })
@@ -379,6 +388,55 @@ test('resize 不翻转悬停状态：指针没动，状态就不变（不抖动�
   assert.ok(pet.stage.classList.contains('is-hovering'), 'resize 不得翻转悬停状态（状态只随指针输入变化）')
   container.dispatch('pointermove', pointer(10, 90))
   assert.ok(!pet.stage.classList.contains('is-hovering'), '下一条指针事件才按新矩形更新状态（x=10 < 左边界 36）')
+})
+
+/* ---------------- 滚动失效路径（预览页卡片在可滚动页面里） ---------------- */
+
+test('页面滚动 120px → 命中矩形跟着上移（不是停在旧位置）', () => {
+  const { pet, container, scrollBy, fireScroll } = loadPet({ boxes: BOXES })
+  container.dispatch('pointermove', pointer(120, 114))
+  assert.ok(pet.stage.classList.contains('is-hovering'), '前提：初始悬停中')
+  const before = pet.getHoverRect()
+  assert.deepEqual(before, { left: 36, top: 5, right: 204, bottom: 280 }, '前提：初始矩形')
+
+  // 页面向下滚 120：所有客户端矩形同步上移 120，容器尺寸不变（RO 不会回调）
+  scrollBy(120)
+  assert.equal(pet._hoverRectDirty, false, '前提：滚动不改几何字段，脏标记本来是干净的 —— 缺陷根因')
+  fireScroll()
+
+  const after = pet.getHoverRect()
+  assert.equal(after.top, before.top - 120, '滚动后矩形上沿必须跟着上移 120（停在旧位置就会错位）')
+  assert.deepEqual(after, { left: 36, top: -115, right: 204, bottom: 160 }, '整体上移 120，并按容器新位置裁剪')
+
+  // 上移后才进入矩形的区域（旧矩形外）必须命中；移出矩形的区域（旧矩形内）必须不命中
+  container.dispatch('pointermove', pointer(120, -60))
+  assert.ok(pet.stage.classList.contains('is-hovering'), '滚动后头部露出的区域必须命中（旧矩形上沿是 5）')
+  container.dispatch('pointermove', pointer(120, 200))
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '滚动后卡片下方的空白不得误触发（新矩形下沿 160）')
+})
+
+test('滚动不翻转悬停状态：指针没动，状态就不变（不抖动不变量）', () => {
+  const { pet, container, scrollBy, fireScroll } = loadPet({ boxes: BOXES })
+  container.dispatch('pointermove', pointer(120, 114))
+  assert.ok(pet.stage.classList.contains('is-hovering'))
+
+  scrollBy(120)
+  fireScroll()
+  assert.ok(pet.stage.classList.contains('is-hovering'), '滚动本身不得翻转悬停状态（状态只随指针输入变化）')
+
+  // 下一条指针事件才按新矩形更新（指针位置已经落在矩形外）
+  container.dispatch('pointermove', pointer(120, 240))
+  assert.ok(!pet.stage.classList.contains('is-hovering'))
+})
+
+test('无关滚动（目标不在本容器内）不触发重算', () => {
+  const { pet, container, boxes, scrollBy, fireScroll } = loadPet({ boxes: BOXES })
+  container.dispatch('pointermove', pointer(120, 114))
+  const r1 = pet.getHoverRect()
+  scrollBy(120)
+  fireScroll({ contains: () => false })
+  assert.equal(pet.getHoverRect(), r1, '别人的滚动不该重算本矩形的几何')
+  assert.deepEqual(boxes.art, rect(48, -103, 192, 105), '前提：世界确实滚了（尺寸没变）')
 })
 
 test('resize 同尺寸回调（RO 首次回调）不重算，避免无谓的布局读取', () => {

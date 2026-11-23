@@ -141,7 +141,7 @@ export class SettingsPanel {
           <input type="range" name="hoverFadeOpacity" min="0" max="100" step="5" value="${hf.pct}">
         </div>
       </div>
-      <div class="hint">数值越小越透明；0% = 悬停时完全看不见，移开鼠标即恢复。命中区 = 宠物窗口内的矩形（浏览器预览页为宠物卡片）：宠物、地面阴影与下方状态文字一起淡化；矩形外的空白不触发。开启鼠标穿透后同样生效（Linux 原生 Wayland 会话视平台而定）。</div>
+      <div class="hint">数值越小越透明；0% = 悬停时完全看不见，移开鼠标即恢复。命中区 = 宠物窗口内的矩形（浏览器预览页为宠物卡片）：宠物、地面阴影与下方状态文字一起淡化；矩形外的空白不触发。悬停判定依赖窗口自身的指针事件，鼠标穿透模式下暂不生效。</div>
 
       <div class="section">⬆️ 更新</div>
       <div class="check"><input type="checkbox" name="autoUpdate" ${config.update?.autoCheck !== false ? 'checked' : ''}><span>启动时自动检查更新</span></div>

@@ -235,6 +235,27 @@ export class PetView {
       this._hoverOverArmed = true
     })
     this._watchContainerResize()
+    this._watchContainerScroll()
+  }
+
+  /**
+   * 滚动也会让命中矩形作废：矩形存的是**客户端坐标**，页面/容器一滚，宠物在屏幕上的位置全变，
+   * 但尺寸没变 → ResizeObserver 不会回调。预览页（卡片在可滚动的页面里）必需；桌面版窗口
+   * 是 overflow:hidden，这条路径不会触发。
+   * scroll 不冒泡，所以用 window 上的捕获监听（能盖住页面滚动与内部滚动容器）。
+   * 与 resize 一致：只重算矩形，不重排气泡、不翻转 `.is-hovering`。
+   */
+  _watchContainerScroll() {
+    if (this._scrollWatch) return
+    this._scrollWatch = (e) => {
+      // 滚动目标与本宠物无关时不必重算（减少无关滚动带来的布局读取）
+      const t = e?.target
+      if (t && t !== document && t !== window && !(t.contains?.(this.container))) return
+      if (!this._hoverRect) return // 还没算过矩形（无人悬停过）→ 下次判定自然是新的
+      this.markHoverRectDirty()
+      this.getHoverRect()
+    }
+    window.addEventListener('scroll', this._scrollWatch, { capture: true, passive: true })
   }
 
   /** 容器尺寸：优先布局尺寸（clientWidth/Height，不含祖先 transform），拿不到时退回渲染尺寸 */
@@ -248,9 +269,9 @@ export class PetView {
   }
 
   /**
-   * 容器尺寸变化的失效路径。
+   * 容器几何失效路径。
    * 为什么必须有：命中矩形是懒计算 + 脏标记，只在「几何代码主动改」时置脏；
-   * 而窗口/预览卡片 resize 是外部布局变化，不改任何几何字段，脏标记一直是干净的 →
+   * 而窗口/预览卡片 resize、页面滚动都是外部布局变化，不改任何几何字段，脏标记一直是干净的 →
    * 矩形停在旧位置，命中区与实际内容错位。
    * 只重算矩形（并让气泡按新宽度重排），**不碰 is-hovering**：
    * 「悬停状态只随指针输入变化」是不抖动的根基（resize 时指针没动，状态就不该翻）。
