@@ -22,6 +22,21 @@ contextBridge.exposeInMainWorld('vllmPet', {
     ipcRenderer.on('config:changed', listener)
     return () => ipcRenderer.removeListener('config:changed', listener)
   },
+  // 穿透悬停：模式（是否处于穿透悬停会话）+ 主进程轮询到的光标（0..1 归一化，null = 不在窗口内）
+  onHoverMode: (cb) => {
+    const listener = (_event, payload) => cb(payload)
+    ipcRenderer.on('hover:mode', listener)
+    return () => ipcRenderer.removeListener('hover:mode', listener)
+  },
+  onHoverCursor: (cb) => {
+    const listener = (_event, payload) => cb(payload)
+    ipcRenderer.on('hover:cursor', listener)
+    return () => ipcRenderer.removeListener('hover:cursor', listener)
+  },
+  getHoverState: () => ipcRenderer.invoke('hover:cursor:get'),
+  // 事件源存活证明：渲染层收到「带坐标的转发指针事件」时上报一次（穿透会话内）
+  reportHoverEvent: () => ipcRenderer.send('hover:event'),
+
   onPowerPause: (cb) => {
     const listener = (_event, paused) => cb(paused)
     ipcRenderer.on('power:pause', listener)

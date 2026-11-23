@@ -11,6 +11,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { ConfigStore } from './config-store.js'
+import { createHoverMonitor, shouldRunHoverMonitor } from './hover-monitor.js'
 import { PollerService } from './poller-service.js'
 import { UpdateService } from './updater.js'
 
@@ -37,13 +38,92 @@ if (SMOKE) {
   console.log('[smoke] userData =', tmp)
 }
 
+/**
+ * 平台闸门：只有 Windows/macOS 进入「穿透 + 悬停」路径（阶段 0 裁决 §2.2）。
+ * Linux 恒 false，理由（实测，勿随手加回来）：
+ *   1) 上游 electron#52456：43.x 在 X11 上 setIgnoreMouseEvents 不生效，点击被吞；
+ *   2) 穿透模式（ignore=true）下 screen.getCursorScreenPoint() 读数冻结 —— 单信号无法自证，
+ *      冻结检测不成立，只能靠平台闸门。
+ * 保留 true 的前提：该平台通过阶段 0 裁决 §3「2A」的三项实测（穿透有效 / forward 有效 / 读数不冻结）。
+ */
+const HOVER_SUPPORTED_PLATFORMS = ['win32', 'darwin']
+const HOVER_SUPPORTED = HOVER_SUPPORTED_PLATFORMS.includes(process.platform)
+
 let win = null
 let settingsWin = null
+let hoverMonitor = null
+let hoverMode = false // 当前推给渲染层的「穿透悬停会话是否激活」
+let powerPaused = false // 锁屏/休眠（与 power:pause 广播同步）
 let tray = null
 let store = null
 let poller = null
 let updater = null
 let dragSession = null
+
+/* ---------------- 穿透悬停监控 ---------------- */
+/**
+ * 会话条件：穿透开 + 悬停功能开 + 窗口可见 + 未最小化 + 未锁屏 + 非冒烟（+ 平台支持）。
+ * 平台不支持时 shouldRunHoverMonitor 恒 false → 零行为（不起定时器、不推送、状态不变）。
+ */
+function hoverSessionActive() {
+  if (!win || win.isDestroyed()) return false
+  const config = store.load()
+  return shouldRunHoverMonitor({
+    supported: HOVER_SUPPORTED,
+    clickThrough: !!config.window?.clickThrough,
+    enabled: config.hoverFade?.enabled !== false,
+    visible: win.isVisible(),
+    minimized: win.isMinimized(),
+    locked: powerPaused,
+    smoke: SMOKE
+  })
+}
+
+function initHoverMonitor() {
+  if (hoverMonitor) return hoverMonitor
+  hoverMonitor = createHoverMonitor({
+    supported: HOVER_SUPPORTED,
+    getCursor: () => screen.getCursorScreenPoint(),
+    getBounds: () => (win && !win.isDestroyed() ? win.getContentBounds() : null),
+    send: (payload) => {
+      if (win && !win.isDestroyed()) win.webContents.send('hover:cursor', payload)
+    },
+    log: (...args) => console.warn(...args),
+    // 监控自己判定「读不到全局光标」→ 渲染层回到指针模式（失焦复位等行为也随之恢复）
+    onDegrade: () => {
+      hoverMode = false
+      if (win && !win.isDestroyed()) win.webContents.send('hover:mode', { clickThrough: false })
+    }
+  })
+  return hoverMonitor
+}
+
+/**
+ * 同步「模式 + 监控」。
+ * - 进入会话：先推模式（渲染层据此停用 blur 复位），再启动监控（首采样即种子）
+ * - 退出会话：停监控（内部会推 null 清状态）再推模式
+ * - `resend`：页面加载完成/重载后的握手，强制重发一次模式与当前光标
+ */
+function syncHoverMonitor({ resend = false } = {}) {
+  if (!win || win.isDestroyed()) return
+  initHoverMonitor()
+  const active = hoverSessionActive()
+  if (active === hoverMode) {
+    if (active && resend) {
+      win.webContents.send('hover:mode', { clickThrough: true })
+      hoverMonitor.sync()
+    }
+    return
+  }
+  hoverMode = active
+  if (active) {
+    win.webContents.send('hover:mode', { clickThrough: true })
+    hoverMonitor.start()
+  } else {
+    hoverMonitor.stop()
+    win.webContents.send('hover:mode', { clickThrough: false })
+  }
+}
 
 /* ---------------- 窗口 ---------------- */
 function createWindow() {
@@ -97,7 +177,18 @@ function createWindow() {
     })
   }
 
-  win.on('closed', () => { win = null })
+  // 穿透悬停：页面加载完成后握手（重发模式 + 当前光标），窗口可见性/最小化变化时同步
+  initHoverMonitor()
+  win.webContents.on('did-finish-load', () => syncHoverMonitor({ resend: true }))
+  win.on('show', () => syncHoverMonitor())
+  win.on('hide', () => syncHoverMonitor())
+  win.on('minimize', () => syncHoverMonitor())
+  win.on('restore', () => syncHoverMonitor())
+  win.on('closed', () => {
+    hoverMonitor?.stop()
+    hoverMode = false
+    win = null
+  })
   if (SMOKE) runSmokeCapture()
   return win
 }
@@ -110,6 +201,8 @@ function applyWindowConfig(config) {
   win.setVisibleOnAllWorkspaces(config.window?.allWorkspaces !== false, { visibleOnFullScreen: true })
   win.setIgnoreMouseEvents(!!config.window?.clickThrough, { forward: true })
   if (typeof config.window?.opacity === 'number') win.setOpacity(config.window.opacity)
+  // 穿透或功能开关变了 → 会话条件随之变化（不改 setIgnoreMouseEvents 的任何语义）
+  syncHoverMonitor()
 }
 
 /* ---------------- 托盘 ---------------- */
@@ -288,6 +381,19 @@ function registerIpc() {
     store.save({ window: { alwaysOnTop: !!v } })
     applyAndRefresh()
   })
+  // 穿透悬停：渲染层启动/重载后主动拉取一次（避免「启动时光标已在宠物上却不淡化」）
+  ipcMain.handle('hover:cursor:get', () => {
+    const state = hoverMonitor?.getState?.() || {}
+    return {
+      clickThrough: hoverMode,
+      cursor: state.cursor ?? null,
+      // 调试/验收用：来源与是否在轮询（渲染层不依赖这两个字段）
+      source: state.source ?? null,
+      running: !!state.running
+    }
+  })
+  // 渲染层收到「带坐标的转发指针事件」时上报一次 → 事件源取得权威、主进程停轮询
+  ipcMain.on('hover:event', () => hoverMonitor?.reportEvent({ hasCoords: true }))
   ipcMain.on('drag:start', startDrag)
   ipcMain.on('drag:end', endDrag)
   ipcMain.on('app:quit', () => app.quit())
@@ -391,9 +497,12 @@ if (!gotLock) {
       updater.scheduleAutoCheck()
       // 锁屏/系统休眠时暂停动画与轮询（省电）；恢复时 poller.start() 立即重新采样
       const setPowerPaused = (paused) => {
+        powerPaused = !!paused
         win?.webContents.send('power:pause', paused)
         if (paused) poller?.stop()
         else poller?.start()
+        // 锁屏/休眠：立即停穿透悬停并清状态；解锁/唤醒按当前光标重新判定
+        syncHoverMonitor()
       }
       powerMonitor.on('suspend', () => setPowerPaused(true))
       powerMonitor.on('resume', () => setPowerPaused(false))
@@ -420,6 +529,7 @@ if (!gotLock) {
   })
   app.on('before-quit', () => {
     poller?.stop()
+    hoverMonitor?.stop()
     endDrag()
   })
 }

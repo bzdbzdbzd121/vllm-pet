@@ -49,6 +49,10 @@ export class PetView {
     this._hoverBound = false
     this._hoverRect = null
     this._hoverRectDirty = true
+    // 穿透悬停会话（主进程告知）：来源从「本地指针」变成「转发事件 + 主进程光标」
+    this._clickThroughHover = false
+    this._systemEventReported = false
+    this.onSystemEvent = null // 由入口注入：事件源存活证明（每个会话只上报一次）
 
     this.stage = document.createElement('div')
     this.stage.className = 'pet-stage st-idle'
@@ -224,13 +228,17 @@ export class PetView {
     // 指针离开容器（含快速移出窗口）、触摸被系统打断（pointercancel）→ 复位
     this.container.addEventListener('pointerleave', () => this.clearHoverFade())
     this.container.addEventListener('pointercancel', () => this.clearHoverFade())
-    // 失焦 / 页面隐藏（最小化、切桌面、锁屏）→ 复位，并允许下个 pointerover 重新建立
+    // 失焦 / 页面隐藏（最小化、切桌面、锁屏）→ 复位，并允许下个 pointerover 重新建立。
+    // 穿透会话里**不清**：穿透窗口几乎不会获得焦点，靠 blur 会误清且不会自愈；
+    // 「离开窗口/隐藏/最小化/锁屏」由主进程推送 null 或停轮询负责（阶段 0 裁决 §2.3 规则 5）。
     window.addEventListener('blur', () => {
+      if (this._clickThroughHover) return
       this.clearHoverFade()
       this._hoverOverArmed = true
     })
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) return
+      if (this._clickThroughHover) return
       this.clearHoverFade()
       this._hoverOverArmed = true
     })
@@ -331,11 +339,70 @@ export class PetView {
     return this._hoverRect
   }
 
+  /**
+   * 穿透悬停会话开关（主进程 `hover:mode` 推送的 clickThrough）。
+   * 会话内：状态源 = 转发事件（仍走本地指针事件）+ 主进程光标；**不做** blur/visibilitychange 复位。
+   * - 进入会话**不**清状态：主进程紧接着会推一次「当前光标」做播种，先清会闪一下。
+   * - 退出会话清一次并重新武装 pointerover（否则指针静止在宠物上时回不到淡化的确定性行为）。
+   */
+  setClickThroughHover(on) {
+    const next = !!on
+    if (next === this._clickThroughHover) return
+    this._clickThroughHover = next
+    if (next) {
+      this._systemEventReported = false // 新会话：事件源可以再上报一次存活证明
+      return
+    }
+    this.clearHoverFade()
+    this._hoverOverArmed = true
+  }
+
+  /** 是否处于穿透悬停会话（调试/测试用） */
+  isClickThroughHover() {
+    return this._clickThroughHover
+  }
+
+  /**
+   * 外部光标入口（主进程轮询兜底来源）：`{nx, ny}` 是相对窗口内容区（0..1）的归一化坐标，
+   * 与 DIP/物理像素/页面缩放无关；`null` = 不在窗口内/未知 → 清状态。
+   * 非穿透会话里直接忽略，避免两套来源互相打架。
+   */
+  setExternalCursor(payload) {
+    if (!this._clickThroughHover) return false
+    const nx = Number(payload?.nx)
+    const ny = Number(payload?.ny)
+    if (!payload || !Number.isFinite(nx) || !Number.isFinite(ny)) {
+      this.clearHoverFade()
+      return false
+    }
+    const box = this.container?.getBoundingClientRect?.() || { left: 0, top: 0, width: 0, height: 0 }
+    const x = box.left + nx * box.width
+    const y = box.top + ny * box.height
+    const over = containsPoint(this.getHoverRect(), x, y)
+    this._setHovering(over)
+    return true
+  }
+
   /** 单次悬停判定：在矩形内，且不落在内嵌设置面板上 */
   evaluateHover(e) {
     const rect = this.getHoverRect()
     const onPanel = Boolean(e?.target?.closest?.('.pet-settings'))
+    this._noteSystemEvent(e)
     this._setHovering(!onPanel && containsPoint(rect, e?.clientX, e?.clientY))
+  }
+
+  /**
+   * 事件源存活证明：穿透会话内，收到**带坐标**的指针事件即证明转发事件这条链路活着，
+   * 主进程据此停掉轮询（稳态零轮询）。每会话只上报一次，避免 IPC 洪泛。
+   * 没有坐标的事件（pointerleave 之类）不算证据。
+   */
+  _noteSystemEvent(e) {
+    if (!this._clickThroughHover || this._systemEventReported) return
+    if (!Number.isFinite(e?.clientX) || !Number.isFinite(e?.clientY)) return
+    this._systemEventReported = true
+    try {
+      this.onSystemEvent?.()
+    } catch { /* 上报失败不影响本地判定 */ }
   }
 
   /** 锁存悬停状态：只在指针事件里调用；状态未变时不重复写 DOM */

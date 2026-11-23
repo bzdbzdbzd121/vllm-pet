@@ -302,6 +302,157 @@ test('换肤：状态保留（不再清锁存），只重算矩形', () => {
   assert.equal(pet._hoverRectDirty, true, '换肤后必须重算矩形')
 })
 
+/* ---------------- 穿透会话（阶段 2）：状态源切换 / 播种 / 失焦忽略 / 降级 ---------------- */
+
+test('穿透会话：进入时保留状态（不闪），外部光标接管判定', () => {
+  const { pet, container } = loadPet({ boxes: BOXES })
+  container.dispatch('pointermove', pointer(120, 114))
+  assert.ok(pet.stage.classList.contains('is-hovering'), '前提：指针模式下已淡化')
+
+  pet.setClickThroughHover(true)
+  assert.ok(pet.stage.classList.contains('is-hovering'), '进入穿透会话不得先清状态（否则会闪一下）')
+  assert.equal(pet.isClickThroughHover(), true)
+
+  // 主进程兜底光标（归一化 0..1，相对窗口内容区 240×280）
+  pet.setExternalCursor({ nx: 0.5, ny: 0.4 }) // (120, 112) 在矩形内
+  assert.ok(pet.stage.classList.contains('is-hovering'), '外部光标落在矩形内 → 保持淡化')
+  pet.setExternalCursor({ nx: 0.02, ny: 0.98 }) // (4.8, 274) 在矩形外（左边界 36）
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '外部光标落在矩形外 → 取消淡化')
+  pet.setExternalCursor({ nx: 0.5, ny: 0.4 })
+  assert.ok(pet.stage.classList.contains('is-hovering'))
+  pet.setExternalCursor(null)
+  assert.ok(!pet.stage.classList.contains('is-hovering'), 'null（不在窗口内/未知）→ 清状态')
+})
+
+test('穿透会话：非会话状态下的外部光标一律忽略（不打架）', () => {
+  const { pet, container } = loadPet({ boxes: BOXES })
+  assert.equal(pet.setExternalCursor({ nx: 0.5, ny: 0.4 }), false, '指针模式不接外部来源')
+  assert.ok(!pet.stage.classList.contains('is-hovering'))
+  container.dispatch('pointermove', pointer(120, 114))
+  assert.ok(pet.stage.classList.contains('is-hovering'), '指针模式仍由本地事件驱动')
+})
+
+test('穿透会话：blur / 页面隐藏不再误清（普通模式保持 v0.2.0 行为）', () => {
+  const { pet, container, doc } = loadPet({ boxes: BOXES })
+  container.dispatch('pointermove', pointer(120, 114))
+  pet.setClickThroughHover(true)
+
+  container.dispatch('win:blur', {})
+  assert.ok(pet.stage.classList.contains('is-hovering'), '穿透会话内失焦不得清状态（窗口几乎不会获得焦点）')
+  doc.hidden = true
+  doc.dispatch('visibilitychange')
+  assert.ok(pet.stage.classList.contains('is-hovering'), '穿透会话内页面隐藏不清（由主进程推 null 负责）')
+
+  // pointerleave 仍然复位（转发来的 leave 是可信的「离开」信号）
+  container.dispatch('pointerleave', {})
+  assert.ok(!pet.stage.classList.contains('is-hovering'), 'pointerleave 在穿透会话内仍要复位')
+
+  // 退出会话 → 失焦复位恢复
+  container.dispatch('pointermove', pointer(120, 114))
+  assert.ok(pet.stage.classList.contains('is-hovering'))
+  pet.setClickThroughHover(false)
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '退出会话要清一次状态')
+  container.dispatch('pointermove', pointer(120, 114))
+  container.dispatch('win:blur', {})
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '回到指针模式后 blur 复位照旧')
+  assert.equal(pet.isClickThroughHover(), false)
+})
+
+test('穿透会话：退出后重新武装 pointerover（指针静止也能恢复判定）', () => {
+  const { pet, container } = loadPet({ boxes: BOXES })
+  // 先把一次性的 pointerover 吃掉（模拟「加载时已经用过一次」）
+  container.dispatch('pointerover', pointer(120, 114))
+  container.dispatch('pointerleave', {})
+  assert.ok(!pet.stage.classList.contains('is-hovering'))
+  container.dispatch('pointerover', pointer(120, 114))
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '前提：pointerover 已被消费，再来一次不生效')
+
+  container.dispatch('pointermove', pointer(120, 114))
+  pet.setClickThroughHover(true)
+  pet.setClickThroughHover(false)
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '退出会话要清状态')
+  container.dispatch('pointerover', pointer(120, 114))
+  assert.ok(pet.stage.classList.contains('is-hovering'), '退出会话后必须重新武装 pointerover，否则指针静止时永远回不来')
+})
+
+test('穿透会话：只有「带坐标的指针事件」才算事件源存活证明，且每会话只上报一次', () => {
+  let reports = 0
+  const { pet, container, doc } = loadPet({ boxes: BOXES })
+  pet.onSystemEvent = () => { reports += 1 }
+
+  // 指针模式：不上报
+  container.dispatch('pointermove', pointer(120, 114))
+  assert.equal(reports, 0, '非穿透会话不该上报')
+
+  pet.setClickThroughHover(true)
+  container.dispatch('pointermove', pointer(120, 114))
+  assert.equal(reports, 1, '第一个带坐标的事件上报一次')
+  container.dispatch('pointermove', pointer(130, 114))
+  assert.equal(reports, 1, '同一会话不重复上报（避免 IPC 洪泛）')
+
+  // 无坐标事件（pointerleave）不算证据
+  pet.setClickThroughHover(false)
+  pet.setClickThroughHover(true)
+  container.dispatch('pointerleave', {})
+  assert.equal(reports, 1, 'pointerleave 无坐标 → 不算存活证据')
+
+  // 走判定路径但没有坐标的事件（某些合成/转发异常）同样不算
+  container.dispatch('pointermove', { target: { closest: () => null } })
+  assert.equal(reports, 1, '没有 clientX/clientY 的 pointermove 不算存活证据')
+
+  // 新会话可以再上报一次
+  container.dispatch('pointermove', pointer(120, 114))
+  assert.equal(reports, 2, '重新进入会话后允许再上报一次')
+  doc.hidden = false
+})
+
+test('降级：主进程把模式推回 false 后，渲染层恢复指针语义（失焦复位、状态已清）', () => {
+  const { pet, container } = loadPet({ boxes: BOXES })
+  pet.setClickThroughHover(true)
+  container.dispatch('pointermove', pointer(120, 114))
+  assert.ok(pet.stage.classList.contains('is-hovering'))
+
+  // 主进程判定「读不到全局光标」→ 推 { clickThrough: false }
+  pet.setClickThroughHover(false)
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '降级要清状态（不能卡在淡化）')
+  container.dispatch('pointermove', pointer(120, 114))
+  container.dispatch('win:blur', {})
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '降级后失焦复位恢复可用')
+})
+
+test('接线：入口订阅模式/光标并做启动握手，事件上报接到 IPC', () => {
+  const src = read('src/renderer/pet-main.js')
+  for (const marker of ['getHoverState', 'onHoverMode', 'onHoverCursor', 'reportHoverEvent', 'setClickThroughHover', 'setExternalCursor']) {
+    assert.match(src, new RegExp(marker), `pet-main.js 必须接线 ${marker}`)
+  }
+  const preload = read('src/main/preload.cjs')
+  for (const marker of ['onHoverMode', 'onHoverCursor', 'getHoverState', 'reportHoverEvent', 'hover:mode', 'hover:cursor', 'hover:cursor:get', 'hover:event']) {
+    assert.match(preload, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `preload.cjs 必须暴露 ${marker}`)
+  }
+  const main = read('src/main/main.js')
+  assert.match(main, /ipcMain\.handle\('hover:cursor:get'/, '主进程要有握手通道')
+  assert.match(main, /ipcMain\.on\('hover:event'/, '主进程要接收事件存活证明')
+  assert.match(main, /on\('did-finish-load', \(\) => syncHoverMonitor\(\{ resend: true \}\)\)/, '页面加载后要重发模式与光标')
+  assert.match(main, /powerPaused = !!paused[\s\S]{0,400}syncHoverMonitor\(\)/, '锁屏/休眠要同步监控')
+  assert.match(main, /hoverMonitor\?\.stop\(\)[\s\S]{0,80}endDrag\(\)/, '退出前要停监控（不留定时器）')
+
+  // 配置变更（穿透/缩放/功能开关）后必须重新同步会话
+  const applyBody = bodyOf(main, 'function applyWindowConfig(')
+  assert.match(applyBody, /syncHoverMonitor\(\)/, 'applyWindowConfig 必须同步穿透悬停会话')
+  // 窗口可见性/最小化变化要同步（隐藏/最小化 → 停；恢复 → 按当前光标重新判定）
+  for (const ev of ['show', 'hide', 'minimize', 'restore']) {
+    assert.match(main, new RegExp(`win\\.on\\('${ev}', \\(\\) => syncHoverMonitor\\(\\)\\)`), `main.js 必须监听 window ${ev}`)
+  }
+  // 监控器必须注入真实的光标/窗口框/发送（不是空实现）
+  const initBody = bodyOf(main, 'function initHoverMonitor(')
+  assert.match(initBody, /screen\.getCursorScreenPoint\(\)/, '必须读系统光标')
+  assert.match(initBody, /win\.getContentBounds\(\)/, '必须读内容区边界（DIP）')
+  assert.match(initBody, /hover:cursor/, '必须推 hover:cursor 通道')
+  assert.match(initBody, /supported: HOVER_SUPPORTED/, '必须把平台闸门传给监控器')
+  // 会话条件必须走 shouldRunHoverMonitor（Linux → false → 零行为）
+  assert.match(bodyOf(main, 'function hoverSessionActive('), /shouldRunHoverMonitor\(/, '会话条件必须走 shouldRunHoverMonitor')
+})
+
 /* ---------------- 包装层 / 宽度上限 ---------------- */
 
 test('构造：状态气泡被包进 .pet-status-wrap（包装层负责淡化，气泡保留显隐）', () => {

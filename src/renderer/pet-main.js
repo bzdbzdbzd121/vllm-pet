@@ -73,6 +73,18 @@ async function boot() {
   // 设置窗口保存后同步新配置
   bridge?.onConfigChanged?.((saved) => applyConfig(saved))
 
+  // 穿透悬停：事件源的存活证明（收到带坐标的转发指针事件时上报一次，主进程据此停轮询）
+  pet.onSystemEvent = () => bridge?.reportHoverEvent?.()
+
+  // 穿透悬停：启动时握手一次（主进程可能先于页面推送），随后订阅模式与兜底光标。
+  // 模式载荷 `{ clickThrough }`：只有「穿透开 + 悬停开 + 平台支持 + 可见」的会话才是 true。
+  bridge?.getHoverState?.()?.then((st) => {
+    pet.setClickThroughHover(!!st?.clickThrough)
+    if (st?.clickThrough) pet.setExternalCursor(st.cursor ?? null)
+  }).catch(() => { /* 主进程未就绪时忽略：只走本地指针事件 */ })
+  bridge?.onHoverMode?.((payload) => pet.setClickThroughHover(!!payload?.clickThrough))
+  bridge?.onHoverCursor?.((payload) => pet.setExternalCursor(payload))
+
   // 锁屏/系统休眠时主进程广播暂停：冻结所有动画（合成层动画一并停 tick）
   bridge?.onPowerPause?.((paused) => {
     pet.stage.classList.toggle('power-paused', !!paused)
