@@ -144,6 +144,35 @@ tests/*.test.mjs            node --test，89 个用例
      opacity」（状态机：指针只移动一次后不再发事件，150ms 采样 `getComputedStyle('.pet-scale').opacity`
      3.3s，`|Δ|>0.05` 的次数必须为 0）。
 
+10. **穿透下的悬停：平台分级 + 存活证明，不要「所有平台统一轮询」**：
+   窗口一旦 `setIgnoreMouseEvents(true)`，很多平台就收不到鼠标事件；更麻烦的是「主进程读到的光标位置」
+   本身可能冻结（读数不变既可能是光标停着，也可能是 API 卡住）。
+   **实测结论（本仓 Linux/X11 + Electron 43.1.1，2025-11 recheck）**：
+   - S1：`setIgnoreMouseEvents(true)` 在 X11 上**没有改变 X Input Shape**（仍是整窗矩形），点击被吞 ——
+     既不进宠物也不落到底层窗口；`forward:true` 同样无效。对应上游 `electron#52456`
+     （43.2.0 报告、43.7.1 未修、42.7.0 正常）。**穿透本身在 Linux 就是坏的，与本功能无关。**
+   - S2：普通模式下 `screen.getCursorScreenPoint()` 精确（6/6 与 `XQueryPointer` 一致）；
+     **穿透模式（ignore=true）下读数冻结**（连续 6 次采样停在旧值，指针已移动；双窗口场景 3/3 陈旧）。
+   - 因此 Linux 不进入这条路径（`HOVER_SUPPORTED_PLATFORMS` 只有 `win32`/`darwin`），行为与 v0.2.0 一致。
+   **实现要点（`src/main/hover-monitor.js`）**：
+   - 任何来源必须先「出示存活证据」才能改状态：事件源 = 收到**带坐标**的转发指针事件（`pointerleave`
+     不算）；轮询源 = 同一会话内出现 **≥2 个不同读数**。冻结的源永远拿不到权威。
+   - 种子（启动时若光标已在窗口内先推一次）只在 **1.5s** 内有效；到期没有任何来源获证就撤回并记一次日志
+     —— fail-closed：最坏是「不淡化」，不是「卡在淡化」。
+   - 事件源优先：取得权威后**停轮询**（稳态零轮询）；采样抛错/非有限坐标 → 清状态 + 停轮询 + 只记一次 +
+     通知渲染层回指针模式，**永不抛到未捕获异常**。
+   - `sync()`/`hover:cursor:get`（页面重载握手）必须**采样「此刻」**，不能交缓存残值；既无权威又无有效种子
+     时直接给 `null`（冻结源的读数不得被握手点亮）。
+   - 穿透会话内渲染层**不**用 `blur`/`visibilitychange` 复位（穿透窗口几乎不获得焦点，靠它会误清且不自愈），
+     `pointerleave`/`pointercancel` 仍复位；「离开窗口/隐藏/最小化/锁屏/休眠/退出」由主进程推送 `null` 或停轮询。
+   **平台宣称的门槛（2A，实机三项，缺一不可；未过即把该平台从白名单移除）**：
+   1. `clickThrough=true` 时点击宠物区域 → 事件落到**下层窗口**（穿透有效）。
+   2. `clickThrough=true` 时鼠标移过宠物 → 渲染层收到 `pointermove`/`pointerleave`（转发有效）。
+   3. `clickThrough=true` 时移动光标 3 次 → `getCursorScreenPoint()` 给出 **≥3 个不同读数**（读数不冻结）。
+   Linux 的两项复现方法（X11）：`xshape` 查 `ShapeInput` 矩形数（穿透后仍是 1 个整窗矩形）；
+   `XTest` 真点击 + 双窗口日志对照（宠物窗口与下层窗口都收不到）；穿透模式下每 200ms 采样一次
+   `screen.getCursorScreenPoint()` 并同步移动指针，比对是否停在旧值。
+
 ## 4. ⚠️ 排坑指南（都踩过，别再踩）
 
 1. **CSS transform 会覆盖 SVG 元素的 `transform` 属性。**
@@ -232,13 +261,23 @@ npm run build     # ② Vite 构建（渲染层三个页面 → dist/）
 npm run smoke     # ③ 集成冒烟：隐藏窗口启动 Electron，截图 smoke-pet.png 后退出
 ```
 
-**悬停命中区回归（改了 `robot.css` 的悬停规则 / `pet.js` 的 setHoverFade / 皮肤 SVG 后跑）**：
+**悬停命中区回归（改了 `robot.css` 的悬停规则 / `pet.js` 的命中判定 / 皮肤 SVG 后跑）**：
 
 ```bash
 npm run build && node scripts/probe-hover.mjs
 # 依次以 0.6 / 1 / 2 缩放启动隐藏窗口，把 scripts/hover-probe.js 注入页面逐点校对它的 POINTS 坐标表
-# 输出：HOVER-PROBE scale=1 pass=17 fail=0；任一档失败则打印具体坐标与期望值并以非零退出
+# 输出：HOVER-PROBE scale=<x> pass=<n> fail=0；任一档失败则打印具体坐标与期望值并以非零退出
 ```
+
+- 探针是**端到端**的：每个点向容器派发一次合成 `pointermove`，读舞台是否带 `.is-hovering`，
+  不自己重算几何。本体上的点用 SVG viewBox 坐标经 `getScreenCTM()` 换算（0.6 档舞台被压缩+留边时
+  仍正确），空白/容器外用容器坐标，阴影/文字点取各自 DOM 框中心。
+- 通过时通常是 `pass=14`：默认状态文字较长，会把矩形撑宽，`(20,140)`/`(225,140)` 这两个
+  「左右空白」反例已不成立，探针会**显式跳过**并打印原因（跳过不计入 fail）。
+- 冻结动画的前提：探针先注入 `animation-play-state: paused`，避免 bob/sway 让点位飘。
+- 抖动不回归用「指针只移动一次后不再发事件」的口径：150ms 采样 `getComputedStyle('.pet-scale').opacity`
+  3.3s，`|Δ|>0.05` 的次数必须为 0（`docs`/脚本见提交历史；也可用 `scripts/hover-probe.js` 的
+  `scale=1` 档连续两次运行对比）。
 
 **冒烟环境变量**（主进程 `VLLM_PET_SMOKE=1` 时生效，配置用临时目录，不碰用户数据）：
 
@@ -358,6 +397,10 @@ SVG class 钩子表以它为准。改 `default-robot/robot.svg` 的结构（新�
   需 `xattr -dr com.apple.quarantine <app路径>` 移除隔离（README 已写明）。
   根治需 Apple 开发者账号签名 + 公证（CI 配 CSC/APPLE 相关 secrets）。
 - Windows/Linux 实机未人工验证过（CI 构建通过，未实际上机运行）。
+- **穿透下的悬停（透传淡化）**：Windows/macOS 已实现，但**尚未实机验收** —— 需按 §3 决策 10 的
+  2A 三项在真机上各跑一次；任一项不过就把该平台从 `HOVER_SUPPORTED_PLATFORMS` 移除（宁可少一个反馈，
+  也不宣称一个不生效的功能）。Linux 已实机确认不可用（X11 穿透被上游 #52456 破坏 + 穿透下光标读数冻结；
+  Wayland 无全局光标 API），因此 Linux 恒关闭，悬停只在未开穿透时生效。
 - 窗口位置记忆（`window.x/y`）已实现；多显示器边缘吸附未做。
 - SGLang 采集覆盖：已支持 `sglang:*` 指标（含 priority 分档、多 rank）与 ≥ 0.5.8 的
   `/v1/loads` 兜底；SGLang < 0.5.8 且未开 `--enable-metrics` 时只能判在线/离线（显示 hint）。

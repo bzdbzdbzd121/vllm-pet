@@ -273,6 +273,9 @@ export function createHoverMonitor({
      */
     sync() {
       if (!supported || !sessionActive) return null
+      // 防御：既没有权威（事件/轮询都没获证）也没有有效种子时，任何读数都是「未确认」的。
+      // 冻结源（读数卡住）就落在这里 —— 握手不得把种子值当成状态再点亮一次（fail-closed）。
+      if (!source && !seedActive) return null
       const payload = sample({ note: false })
       if (!sessionActive) return null // 采样失败：fail() 已清状态并通知降级
       emit(payload, true)

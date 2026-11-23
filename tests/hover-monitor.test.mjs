@@ -317,12 +317,28 @@ test('sync 采样失败 → 返回 null、清状态、停轮询、不抛（fail-
   monitor.start()
   monitor.reportEvent({ hasCoords: true })
   boom = true
-  assert.doesNotThrow(() => monitor.sync())
+  let first
+  assert.doesNotThrow(() => { first = monitor.sync() })
+  assert.equal(first, null, '采样失败时**第一次**调用就必须返回 null（不能给残值）')
   assert.equal(monitor.sync(), null, '采样失败必须给 null（不能给残值）')
   assert.equal(sent[sent.length - 1], null, '失败也要把状态清掉')
   assert.equal(monitor.isRunning(), false)
   assert.equal(monitor.getState().degraded, true)
   assert.equal(logs.length, 1, '只记一次日志')
+})
+
+test('冻结源 + 种子过期后：sync 不得把种子值重新点亮（fail-closed）', () => {
+  const { monitor, clock, sent } = makeMonitor({ cursor: inside })
+  monitor.start() // 种子 {0.5,0.5}
+  clock.advance(1600) // 1.5s 无存活证据 → 种子撤回
+  assert.deepEqual(lastSent(sent), null, '前提：种子已撤回')
+  const before = sent.length
+
+  const payload = monitor.sync()
+  assert.equal(payload, null, '既无权威又无有效种子时，握手必须给 null')
+  assert.equal(sent.length, before, '不得把恒定（冻结）读数当成状态推出去')
+  assert.deepEqual(lastSent(sent), null, '状态保持未悬停')
+  assert.equal(monitor.getState().source, null, '不得因此授予权威')
 })
 
 test('sync 的单次采样不计入存活证据（握手不能绕过权威规则）', () => {
