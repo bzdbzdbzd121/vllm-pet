@@ -122,7 +122,8 @@ tests/*.test.mjs            node --test，89 个用例
    `.is-hovering` class；CSS 只负责
    `.pet-stage.hover-fade-enabled.is-hovering .pet-scale/.pet-shadow/.pet-status-wrap { opacity: var(--hover-opacity) }`
    与 160ms / 180ms 过渡。命中矩形是**懒计算 + 脏标记**（`setStatusLine/setScale/setStatusFontSize/
-   setState/celebrate/applySkin` 置脏），不在每帧、不在定时器里重算。
+   setState/celebrate/applySkin`，以及容器 resize（`_watchContainerResize`，ResizeObserver）置脏），
+   不在每帧、不在定时器里重算。resize 只重算矩形（顺带按新容器重排气泡宽度），**不翻转** `.is-hovering`。
    - 状态文字有独立包装层 `.pet-status-wrap`：外层负责悬停淡化、气泡自身保留 0/1 显隐与 0.25s，
      两个 opacity 相乘 —— **不要**把淡化直接写到 `.pet-status` 上（隐藏文字时会被拉出来）。
    - `pointermove` 是主路径；`pointerover` **只吃一次**（加载/窗口重新获得焦点时指针可能已经停在
