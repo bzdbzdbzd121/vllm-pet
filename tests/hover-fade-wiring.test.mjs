@@ -15,6 +15,8 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8')
  * 断言的是**真实方法体**的行为（矩形判定/设置面板排除/脏标记/包装层），不是源码字符串。
  * ------------------------------------------------------------------ */
 const rect = (left, top, right, bottom) => ({ left, top, right, bottom, width: right - left, height: bottom - top })
+// 当前假 document：makeEl 造出来的元素靠它回答 ownerDocument（pet.js 用它测量文本宽度）
+let activeDoc = null
 
 function makeEl({ rect: r = rect(0, 0, 0, 0), textContent = '' } = {}) {
   const classes = new Set()
@@ -35,6 +37,7 @@ function makeEl({ rect: r = rect(0, 0, 0, 0), textContent = '' } = {}) {
       toggle: (c, on) => (on === undefined ? (classes.has(c) ? classes.delete(c) : classes.add(c)) : on ? classes.add(c) : classes.delete(c))
     },
     className: '',
+    get ownerDocument() { return activeDoc },
     set rect(v) { r = v },
     getBoundingClientRect: () => r,
     append: (...kids) => kids.forEach((k) => children.push(k)),
@@ -50,6 +53,24 @@ function makeEl({ rect: r = rect(0, 0, 0, 0), textContent = '' } = {}) {
 
 function loadPet({ boxes = {}, showStatus = true, statusText = '空闲中', warn = () => {} } = {}) {
   const handlers = new Map()
+  const doc = {
+    hidden: false,
+    addEventListener: (t, fn) => { handlers.set(`doc:${t}`, [fn]) },
+    // 假排版：字宽 7px/字（含 CJK），让「气泡宽度上限」这条路径真正生效
+    // （否则文本测到 0 宽，上限永远不生效，用例会空转成「两种实现都算出同一个数」）
+    createElement: () => {
+      const el = makeEl()
+      Object.defineProperty(el, 'getBoundingClientRect', {
+        value: () => rect(0, 0, [...String(el.textContent || '')].length * 7, 16)
+      })
+      return el
+    },
+    head: { append: () => {} },
+    body: { append: () => {} },
+    documentElement: { append: () => {} },
+    dispatch: (t) => (handlers.get(`doc:${t}`) || []).forEach((fn) => fn({}))
+  }
+  activeDoc = doc
   const container = makeEl({ rect: boxes.container || rect(0, 0, 240, 280) })
   container.addEventListener = (type, fn) => {
     if (!handlers.has(type)) handlers.set(type, [])
@@ -58,16 +79,17 @@ function loadPet({ boxes = {}, showStatus = true, statusText = '空闲中', warn
   container.dispatch = (type, event) => (handlers.get(type) || []).forEach((fn) => fn(event))
 
   const win = { addEventListener: (t, fn) => { handlers.set(`win:${t}`, [fn]) } }
-  const doc = {
-    hidden: false,
-    addEventListener: (t, fn) => { handlers.set(`doc:${t}`, [fn]) },
-    createElement: () => makeEl(),
-    head: { append: () => {} },
-    body: { append: () => {} },
-    dispatch: (t) => (handlers.get(`doc:${t}`) || []).forEach((fn) => fn({}))
+  const resizeObservers = []
+  class FakeResizeObserver {
+    constructor(cb) { this.cb = cb; this.targets = []; resizeObservers.push(this) }
+    observe(el) { this.targets.push(el) }
+    unobserve(el) { this.targets = this.targets.filter((t) => t !== el) }
+    disconnect() { this.targets = [] }
+    fire() { this.cb([], this) }
   }
   const sandbox = {
     applySkinToStage: () => {},
+    ResizeObserver: FakeResizeObserver,
     bobDurationFor: () => 1000,
     normalizeHoverFade,
     queueMicrotask,
@@ -101,7 +123,8 @@ function loadPet({ boxes = {}, showStatus = true, statusText = '空闲中', warn
   pet.statusEl.getBoundingClientRect = () => boxes.status || rect(92, 248, 149, 272)
   if (showStatus) pet.stage.classList.add('show-status')
   pet.setStatusLine(statusText)
-  return { pet, container, doc, win }
+  const fireResize = () => resizeObservers.filter((o) => o.targets.includes(container)).forEach((o) => o.fire())
+  return { pet, container, doc, win, resizeObservers, fireResize }
 }
 
 const pointer = (x, y, target = { closest: () => null }) => ({ clientX: x, clientY: y, target })
@@ -279,20 +302,90 @@ test('构造：状态气泡被包进 .pet-status-wrap（包装层负责淡化，
   assert.ok(pet.stage.children.includes(pet.statusWrap), '包装层必须挂在舞台上')
 })
 
+const LONG_TEXT = '推理中 ×3 · KV cache 87% · 12.3 tok/s · qwen2.5-72b-instruct'
+const styleWidth = (pet) => Number(String(pet.statusEl.style.width || '').replace('px', ''))
+// 前提守卫：字宽必须大到让上限真正起来，否则「布局宽 vs 渲染宽」两种实现会算出同一个数，用例空转
+const assertCapBinds = () => {
+  const textPx = [...LONG_TEXT].length * 7 + 4
+  assert.ok(textPx > 246, `前提：伪排版下文本宽 ${textPx} 必须超过两档上限之差（246），否则区分不出实现`)
+}
+
 test('气泡宽度上限用容器的**布局宽**（clientWidth），不受祖先 CSS transform 放大', () => {
-  // 预览页：容器渲染宽 276（= 240 × scale(1.15)），布局宽仍是 240 → 上限必须按 240 算
+  assertCapBinds()
+  // 预览页：#pet-holder 布局宽 240，被 scale(1.15) 渲染成 276 → 上限必须按 240 算
   const { pet, container } = loadPet({ boxes: { ...BOXES, container: rect(0, 0, 276, 322) } })
   container.clientWidth = 240
-  pet.setStatusLine('推理中 ×3 · KV cache 87% · 12.3 tok/s · qwen2.5-72b-instruct')
-  const width = Number(String(pet.statusEl.style.width || '').replace('px', ''))
-  assert.ok(width <= 210, `按布局宽 240 计时上限应为 210，实际 ${width}（按渲染宽 276 会算成 246 → 渲染后溢出卡片）`)
+  container.clientHeight = 280
+  pet.setStatusLine(LONG_TEXT)
+  // 240 - 10(border 上限) - 20(padding) = 210；误用渲染宽 276 会算出 276-10-20 = 246 → 渲染后 283 > 卡片 276
+  assert.equal(styleWidth(pet), 210, '上限必须按布局宽 240 算（210），而不是按渲染宽 276 算（246）')
+  assert.ok(styleWidth(pet) * 1.15 <= 276, '按布局宽算出的气泡在 scale(1.15) 下仍装得进 276 的卡片')
 })
 
 test('气泡宽度上限用容器宽（不是整页视口宽）', () => {
+  assertCapBinds()
   const { pet } = loadPet({ boxes: { ...BOXES, container: rect(0, 0, 240, 280) } })
-  pet.setStatusLine('推理中 ×3 · KV cache 87% · 12.3 tok/s · qwen2.5-72b-instruct')
-  const width = Number(String(pet.statusEl.style.width || '').replace('px', ''))
-  assert.ok(width > 0 && width <= 210, `宽度应被容器上限约束（≤ 240-10-20=210），实际 ${width}`)
+  pet.setStatusLine(LONG_TEXT)
+  assert.equal(styleWidth(pet), 210, '上限 = 240 - 10 - 20 = 210（整页视口 1200 宽会算出不受限的大气泡）')
+})
+
+/* ---------------- 容器 resize 失效路径 ---------------- */
+
+test('容器 resize → 命中矩形按新容器重算（不是停在旧位置）', () => {
+  const { pet, container, fireResize, resizeObservers } = loadPet({ boxes: BOXES })
+  assert.equal(resizeObservers.length, 1, 'resize 观察者只能注册一次')
+  container.dispatch('pointermove', pointer(120, 114))
+  assert.ok(pet.stage.classList.contains('is-hovering'), '前提：初始悬停中')
+  const before = pet.getHoverRect()
+  assert.equal(pet._hoverRectDirty, false, '前提：resize 前脏标记是干净的 —— 这正是「矩形停在旧位置」的根因')
+  assert.equal(before.right, 204, '前提：初始矩形右边界 = 本体 192 + 外扩 12')
+
+  // 外部布局变化：容器缩到 160×180（不改任何几何字段，脏标记不会被置位）
+  container.rect = rect(0, 0, 160, 180)
+  container.clientWidth = 160
+  container.clientHeight = 180
+  fireResize()
+
+  assert.equal(pet._hoverRectDirty, false, 'resize 回调必须把矩形重算掉，而不是留着脏标记等下一次指针事件')
+  const after = pet.getHoverRect()
+  assert.notEqual(after, before, 'resize 后必须重算出新矩形')
+  assert.deepEqual(after, { left: 36, top: 5, right: 160, bottom: 180 }, '矩形必须按新容器裁剪（160×180）')
+
+  // 新矩形立刻生效：旧矩形内、新矩形外的点不再命中
+  container.dispatch('pointermove', pointer(190, 100))
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '缩窗后旧矩形覆盖的区域必须失效（190 > 新宽 160）')
+  // 新矩形内仍然命中
+  container.dispatch('pointermove', pointer(120, 114))
+  assert.ok(pet.stage.classList.contains('is-hovering'))
+})
+
+test('resize 不翻转悬停状态：指针没动，状态就不变（不抖动不变量）', () => {
+  const { pet, container, fireResize } = loadPet({ boxes: BOXES })
+  container.dispatch('pointermove', pointer(120, 114))
+  assert.ok(pet.stage.classList.contains('is-hovering'))
+
+  // 容器放大：指针仍在矩形内 → 保持悬停
+  container.rect = rect(0, 0, 480, 560)
+  container.clientWidth = 480
+  container.clientHeight = 560
+  fireResize()
+  assert.ok(pet.stage.classList.contains('is-hovering'), '放大后仍在矩形内，不得掉状态')
+
+  // 容器缩小到指针之外：resize 本身也不得把状态翻掉（等下一条指针事件才更新）
+  container.rect = rect(0, 0, 100, 100)
+  container.clientWidth = 100
+  container.clientHeight = 100
+  fireResize()
+  assert.ok(pet.stage.classList.contains('is-hovering'), 'resize 不得翻转悬停状态（状态只随指针输入变化）')
+  container.dispatch('pointermove', pointer(10, 90))
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '下一条指针事件才按新矩形更新状态（x=10 < 左边界 36）')
+})
+
+test('resize 同尺寸回调（RO 首次回调）不重算，避免无谓的布局读取', () => {
+  const { pet, fireResize } = loadPet({ boxes: BOXES })
+  const r1 = pet.getHoverRect()
+  fireResize()
+  assert.equal(pet.getHoverRect(), r1, '同尺寸时矩形对象应原样复用（identity 相等 = 没有重算）')
 })
 
 /* ---------------- 入口接线 ---------------- */

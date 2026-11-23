@@ -150,9 +150,7 @@ export class PetView {
     const doc = this.stage.ownerDocument
     // 用布局宽度（clientWidth）而非 getBoundingClientRect().width：后者含祖先 CSS transform
     //（预览页 #pet-holder 是 scale(1.15)），拿它跟未缩放的字宽比较会让气泡按 1.15 倍溢出卡片。
-    const layoutW = Number(this.container?.clientWidth) || 0
-    const rectW = this.container?.getBoundingClientRect?.()?.width || 0
-    const cw = layoutW > 0 ? layoutW : rectW > 0 ? rectW : 240
+    const cw = this._containerSize().w || 240
     const maxBorder = Math.max(120, cw - 10)
     const text = this.statusEl.textContent
     let content = 16
@@ -236,6 +234,55 @@ export class PetView {
       this.clearHoverFade()
       this._hoverOverArmed = true
     })
+    this._watchContainerResize()
+  }
+
+  /** 容器尺寸：优先布局尺寸（clientWidth/Height，不含祖先 transform），拿不到时退回渲染尺寸 */
+  _containerSize() {
+    const el = this.container
+    if (!el) return { w: 0, h: 0 }
+    const layoutW = Number(el.clientWidth) || 0
+    if (layoutW > 0) return { w: layoutW, h: Number(el.clientHeight) || 0 }
+    const r = el.getBoundingClientRect?.()
+    return { w: r?.width || 0, h: r?.height || 0 }
+  }
+
+  /**
+   * 容器尺寸变化的失效路径。
+   * 为什么必须有：命中矩形是懒计算 + 脏标记，只在「几何代码主动改」时置脏；
+   * 而窗口/预览卡片 resize 是外部布局变化，不改任何几何字段，脏标记一直是干净的 →
+   * 矩形停在旧位置，命中区与实际内容错位。
+   * 只重算矩形（并让气泡按新宽度重排），**不碰 is-hovering**：
+   * 「悬停状态只随指针输入变化」是不抖动的根基（resize 时指针没动，状态就不该翻）。
+   */
+  _watchContainerResize() {
+    if (this._resizeWatch !== undefined) return
+    const apply = () => this._invalidateHoverGeometry()
+    // 用 ResizeObserver：容器尺寸可能因布局变化（预览页卡片自适应、父元素变化）而变，
+    // 这种变化不伴随 window.resize。没有 RO 的环境退回 window.resize。
+    const RO = typeof ResizeObserver !== 'undefined' ? ResizeObserver : null
+    if (RO) {
+      this._resizeWatch = new RO(apply)
+      this._resizeWatch.observe(this.container)
+    } else {
+      this._resizeWatch = null
+      window.addEventListener('resize', apply, { passive: true })
+    }
+    const { w, h } = this._containerSize()
+    this._geomW = w
+    this._geomH = h
+  }
+
+  /** 几何失效：同尺寸回调（RO 首次回调）不做事；尺寸真变了才重排气泡 + 重算矩形 */
+  _invalidateHoverGeometry() {
+    const { w, h } = this._containerSize()
+    if (w === this._geomW && h === this._geomH) return
+    this._geomW = w
+    this._geomH = h
+    this._fitStatusWidth()
+    this.markHoverRectDirty()
+    // 立即重算（下一条指针事件直接用新矩形）；重算本身不判定悬停，状态保持原样
+    this.getHoverRect()
   }
 
   /** 标脏：下一次判定前重算命中矩形（只在几何可能变化时调用，不逐帧重算） */
