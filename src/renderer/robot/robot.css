@@ -53,7 +53,8 @@
 /* ---------- 配色（可被皮肤 CSS 变量覆盖） ---------- */
 .r-shadow { fill: rgba(10, 24, 30, 0.16); }
 .r-antenna-stem { stroke: var(--c-body-shade); stroke-width: 5; stroke-linecap: round; fill: none; }
-/* 光晕是一圈柔光装饰：不参与悬停命中（否则灯泡周围会有一圈「看不见却能触发」的区域） */
+/* 光晕是一圈柔光装饰：命中区是矩形（灯球周围本来就在矩形内），pointer-events:none 只是
+   不把它当事件目标，避免装饰元素抢走指针事件的 target（拖动/右键的判定不受影响） */
 .r-antenna-glow { fill: var(--c-glow); opacity: 0.35; pointer-events: none; }
 .r-antenna-bulb { fill: var(--c-accent); }
 .r-ear { fill: var(--c-body-shade); }

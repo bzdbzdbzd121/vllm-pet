@@ -141,7 +141,7 @@ export class SettingsPanel {
           <input type="range" name="hoverFadeOpacity" min="0" max="100" step="5" value="${hf.pct}">
         </div>
       </div>
-      <div class="hint">数值越小越透明；0% = 悬停时完全看不见，移开鼠标即恢复。命中区 = 宠物窗口内的矩形（浏览器预览页为宠物卡片）：宠物、地面阴影与下方状态文字一起淡化；矩形外的空白不触发。悬停判定：未开穿透时用窗口自身的指针事件；Windows/macOS 开穿透后由主进程读系统光标继续驱动（尚未实机验收）；Linux 开穿透后不生效（X11 穿透有上游缺陷、Wayland 无全局光标）。</div>
+      <div class="hint">数值越小越透明；0% = 悬停时完全看不见，移开鼠标即恢复。命中区 = 宠物窗口内的矩形（浏览器预览页为宠物卡片）：宠物、地面阴影与下方状态文字一起淡化；矩形外的空白不触发。悬停判定：未开穿透时用窗口自身的指针事件；Windows/macOS 开穿透后走转发事件优先 + 主进程轮询兜底（尚未实机验收）；Linux 开穿透后不生效（X11 穿透有上游缺陷、Wayland 无全局光标）。</div>
 
       <div class="section">⬆️ 更新</div>
       <div class="check"><input type="checkbox" name="autoUpdate" ${config.update?.autoCheck !== false ? 'checked' : ''}><span>启动时自动检查更新</span></div>
