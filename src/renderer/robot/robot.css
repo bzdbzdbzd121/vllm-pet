@@ -420,28 +420,36 @@
 }
 
 /* ============================================================
-   悬停淡化：鼠标压在本体上时，本体与地面阴影一起变淡
-   命中区 = .r-hover 分组里实际被绘制的图形（fill / stroke 非 none），由 pet.js 在
-   pointermove 时用 e.target.closest('.r-hover') 判定并锁存为 .is-hovering。
-   不要改成 .pet-stage:hover / .pet-scale:hover / .r-svg:hover：这些盒子与 SVG 根铺满
-   240×280 窗口，会让旁边的空白也触发；也不要用 :has(.r-hover:hover)，它会随动画逐帧翻转。
+   悬停淡化：命中区是「本体 + 地面阴影 + 当前可见状态文字」的并集矩形（外扩 12×缩放，
+   裁剪到容器），由 pet.js 在指针事件里用 hover-region 纯函数判定并锁存为 .is-hovering。
+   淡化作用于 .pet-scale / .pet-shadow / .pet-status-wrap 三层，同值同过渡。
+   不要改用 .pet-stage:hover 或 :has(.r-hover:hover)：那会随宠物自主动画逐帧翻转（已实测抖动）。
    ============================================================ */
+
+/* 状态文字的包装层：只负责「悬停淡化」，气泡自身保留 0/1 显隐与 0.25s 过渡 */
+.pet-status-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
 
 /* 过渡写在「未触发时也成立」的规则上，否则离开悬停没有过渡可跑。
    同时只有挂着这个 class 才启用过渡 —— 关闭开关时立即恢复，不做 180ms 等待。 */
 .pet-stage.hover-fade-enabled .pet-scale,
-.pet-stage.hover-fade-enabled .pet-shadow {
-  /* 离开先等 180ms 再恢复：跨过手臂与身体之间约 4.5px 的缝，以及拖动时窗口跟随的短暂滑出 */
+.pet-stage.hover-fade-enabled .pet-shadow,
+.pet-stage.hover-fade-enabled .pet-status-wrap {
+  /* 离开先等 180ms 再恢复：跨过外扩带与拖动时窗口跟随的短暂滑出 */
   transition: opacity 160ms ease 180ms;
 }
 
-/* 命中：.is-hovering 由指针事件锁存（pet.js 的 pointermove + closest('.r-hover')）。
+/* 命中：.is-hovering 由指针事件锁存（pet.js 的矩形判定）。
    为什么不用 `:has(.r-hover:hover)`：伪类会跟随命中测试逐帧重算，而宠物自己一直在动，
    静止指针的状态就会跟着几何来回翻 → opacity 在设定值与 1 之间呼吸式抖动。
-   所以这里只读锁存 class，不参与命中判定；将来要叠加「拖动时恢复不透明」
-   也请沿用同一条规则的附加条件，不要另写低特异性覆盖规则。 */
+   三层写在同一选择器组里，保证同值、同帧启动、同时长。 */
 .pet-stage.hover-fade-enabled.is-hovering .pet-scale,
-.pet-stage.hover-fade-enabled.is-hovering .pet-shadow {
+.pet-stage.hover-fade-enabled.is-hovering .pet-shadow,
+.pet-stage.hover-fade-enabled.is-hovering .pet-status-wrap {
   opacity: var(--hover-opacity, 0.4);
   transition-delay: 0ms; /* 进入立刻开始淡化 */
 }

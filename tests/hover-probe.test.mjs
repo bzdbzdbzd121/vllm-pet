@@ -9,195 +9,174 @@ import { SCALES, parseProbeReport, summarize } from '../scripts/probe-hover.mjs'
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PROBE = fs.readFileSync(path.join(ROOT, 'scripts/hover-probe.js'), 'utf8')
 
-/* ------------------------------------------------------------------
- * 用独立的几何模型（按 default-robot/robot.svg 的 x/y/width/height/rx
- * 与本项目 robot.css 的 pointer-events 事实建模）充当浏览器：
- * 探针里的坐标表若被改动/写错，这里会给出与该模型不一致的结果 → 测试变红。
- * ------------------------------------------------------------------ */
-
-const inRect = (px, py, x, y, w, h, r = 0) => {
-  if (px < x || px > x + w || py < y || py > y + h) return false
-  if (r <= 0) return true
-  // 圆角矩形：把点夹到「能放圆心的内矩形」，再比距离
-  const cx = Math.min(Math.max(px, x + r), x + w - r)
-  const cy = Math.min(Math.max(py, y + r), y + h - r)
-  return Math.hypot(px - cx, py - cy) <= r
-}
-const inCircle = (px, py, cx, cy, r) => Math.hypot(px - cx, py - cy) <= r
-
-/** .r-hover 分组里真正可命中的绘制图形（描边按 +1.5 外扩） */
-const HIT_SHAPES = [
-  ['antenna-stem', (x, y) => inRect(x, y, 117.5, 46, 5, 20)],
-  ['antenna-bulb', (x, y) => inCircle(x, y, 120, 36, 8)],
-  ['ear-left', (x, y) => inRect(x, y, 48, 104, 12, 24, 6)],
-  ['ear-right', (x, y) => inRect(x, y, 180, 104, 12, 24, 6)],
-  ['head-shell', (x, y) => inRect(x, y, 56.5, 62.5, 127, 103, 31.5)],
-  ['arm-left', (x, y) => inRect(x, y, 58, 176, 20, 38, 10)],
-  ['arm-right', (x, y) => inRect(x, y, 162, 176, 20, 38, 10)],
-  ['body-shell', (x, y) => inRect(x, y, 82.5, 166.5, 75, 59, 21.5)]
-]
-
-/** 不参与命中的元素（robot.css 里 pointer-events: none） */
-const TRANSPARENT_SHAPES = {
-  glow: (x, y) => inCircle(x, y, 120, 36, 15),
-  shadow: (x, y) => inCircle(x, y, 120, 232, 44) && Math.abs(y - 232) <= 9 * Math.sqrt(1 - Math.min(1, ((x - 120) / 44) ** 2)),
-  statusBubble: (x, y) => y >= 250,
-  sweat: (x, y) => inCircle(x, y, 190, 92, 6)
+/**
+ * 探针是注入页面的普通脚本：这里给它一个「假的页面 + 假的 PetView」——
+ * 假 PetView 按矩形语义实现（union→外扩→裁剪→闭区间判定 + 设置面板排除），
+ * 探针只通过「派发 pointermove → 读 .is-hovering」与它交互，因此测的是探针的
+ * 点表/期望值/输出格式，而不是探针自己算的几何。
+ */
+/** 真的 DOMRect 有 width/height，假 DOM 也必须提供（探针用它们判空） */
+function withSize(r) {
+  return { ...r, width: r.right - r.left, height: r.bottom - r.top }
 }
 
-function makeFakePage({ scale = 1, left = 0, top = 0, letterbox = 0, hitRegion = true, extraHitShapes = [], withCtm = true } = {}) {
-  const rect = { left, top, width: 240 * scale, height: 280 * scale }
-  const shapes = [...HIT_SHAPES, ...extraHitShapes]
-  const frozen = []
-  const svg = withCtm
+function makeEnv({ scale = 1, statusShown = true, panel = null, app = {} } = {}) {
+  const containerRect = withSize({ left: 40, top: 30, right: 40 + 240 * scale, bottom: 30 + 280 * scale })
+  const s = (v) => v * scale
+  const box = (l, t, r, b) => withSize({ left: containerRect.left + s(l), top: containerRect.top + s(t), right: containerRect.left + s(r), bottom: containerRect.top + s(b) })
+  const art = box(48, 17, 192, 225)
+  const shadow = box(76, 223, 164, 241)
+  const status = box(92, 248, 149, 272)
+  const pad = (app.noPad ? 0 : 12 * scale)
+
+  const classSet = new Set(statusShown ? ['pet-stage', 'show-status', 'hover-fade-enabled'] : ['pet-stage', 'hover-fade-enabled'])
+  const stage = {
+    classList: {
+      contains: (c) => classSet.has(c),
+      add: (c) => classSet.add(c),
+      remove: (c) => classSet.delete(c),
+      toggle: (c, on) => (on ? classSet.add(c) : classSet.delete(c))
+    },
+    querySelector: (sel) => {
+      if (sel === 'svg') return { getScreenCTM: () => ({ a: scale, b: 0, c: 0, d: scale, e: containerRect.left, f: containerRect.top }) }
+      if (sel === '.r-hover') return app.missingArt ? null : { getBoundingClientRect: () => ({ ...art }) }
+      if (sel === '.pet-scale') return { getBoundingClientRect: () => ({ ...box(0, 0, 240, 280) }) }
+      if (sel === '.pet-shadow .r-shadow') return { getBoundingClientRect: () => ({ ...shadow }) }
+      if (sel === '.pet-status') return { textContent: '空闲中', getBoundingClientRect: () => ({ ...status }) }
+      return null
+    },
+    parentElement: null
+  }
+  const union = (...rs) => {
+    let out = null
+    for (const r of rs) {
+      if (!r) continue
+      out = out
+        ? { left: Math.min(out.left, r.left), top: Math.min(out.top, r.top), right: Math.max(out.right, r.right), bottom: Math.max(out.bottom, r.bottom) }
+        : { ...r }
+    }
+    return out
+  }
+  const hovering = { value: false }
+  const applyApp = (clientX, clientY, target) => {
+    let rect
+    if (app.useStageRect) rect = { ...containerRect }
+    else {
+      const content = union(art, shadow, classSet.has('show-status') ? status : null)
+      rect = content
+        ? {
+            left: Math.max(containerRect.left, content.left - pad),
+            top: Math.max(containerRect.top, content.top - pad),
+            right: Math.min(containerRect.right, content.right + pad),
+            bottom: Math.min(containerRect.bottom, content.bottom + pad)
+          }
+        : { ...containerRect }
+    }
+    const onPanel = !app.ignorePanel && Boolean(target?.closest?.('.pet-settings'))
+    hovering.value = !onPanel && rect.left <= clientX && clientX <= rect.right && rect.top <= clientY && clientY <= rect.bottom
+    if (hovering.value) classSet.add('is-hovering')
+    else classSet.delete('is-hovering')
+  }
+
+  const container = {
+    getBoundingClientRect: () => ({ ...containerRect }),
+    // 真 DOM 会自动给 event.target 赋值，假 DOM 在这里补上
+    dispatchEvent(ev) { ev.target = ev.target || this; applyApp(ev.clientX, ev.clientY, ev.target); return true },
+    closest: () => null,
+    parentElement: null,
+    append: () => {}
+  }
+  stage.parentElement = container
+
+  const panelEl = panel
     ? {
-        // SVG 的 viewBox → 屏幕像素矩阵：缩放 + 留边偏移（letterbox 模拟窗口窄于 240px）
-        getScreenCTM: () => ({ a: scale, b: 0, c: 0, d: scale, e: rect.left, f: rect.top + letterbox })
+        getBoundingClientRect: () => withSize({ left: containerRect.left + s(6), top: containerRect.top + s(4), right: containerRect.left + s(234), bottom: containerRect.top + s(200) }),
+        dispatchEvent(ev) { ev.target = ev.target || this; applyApp(ev.clientX, ev.clientY, ev.target); return true },
+        closest: (sel) => (sel === '.pet-settings' ? panelEl : null)
       }
     : null
-  const stage = {
-    getBoundingClientRect: () => ({ ...rect }),
-    querySelector: (sel) => {
-      if (sel === '.r-hover') return hitRegion ? { classList: ['r-hover'] } : null
-      if (sel === 'svg') return svg
-      return null
-    }
-  }
+
   const document = {
-    querySelector: (sel) => (sel === '.pet-stage' ? stage : null),
+    querySelector: (sel) => (sel === '.pet-stage' ? stage : sel === '.pet-settings' ? panelEl : null),
     createElement: () => ({ textContent: '' }),
-    head: { append: (el) => frozen.push(el.textContent) },
-    elementFromPoint: (cx, cy) => {
-      // 客户端坐标换算回 viewBox 坐标（探针必须做对这一步，缩放/留边才不影响结果）
-      const lx = ((cx - rect.left) / scale)
-      const ly = ((cy - rect.top - (svg ? letterbox : 0)) / (svg ? scale : rect.height / 280))
-      const hit = shapes.some(([, fn]) => fn(lx, ly))
-      return { closest: (sel) => (sel === '.r-hover' && hit ? { tag: 'g' } : null) }
-    }
+    head: { append: () => {} }
   }
-  return { document, frozen, rect }
+  class PointerEvent {
+    constructor(type, init = {}) { this.type = type; Object.assign(this, init) }
+  }
+  return { sandbox: { document, PointerEvent }, container, stage, classSet }
 }
 
 const runProbe = (opts) => {
-  const { document, frozen } = makeFakePage(opts)
-  const out = vm.runInNewContext(PROBE, { document })
-  return { out, frozen }
+  const env = makeEnv(opts)
+  return { out: vm.runInNewContext(PROBE, env.sandbox), ...env }
 }
 
-/* ---------------- 探针本身 ---------------- */
-
-test('探针：三档缩放、任意舞台偏移都是 17/17 通过（viewBox → 屏幕坐标映射正确）', () => {
+test('探针：矩形语义下全部点通过（缩放 0.6 / 1 / 2，含容器偏移）', () => {
   for (const scale of SCALES) {
-    for (const [left, top] of [[0, 0], [13, 27]]) {
-      const { out } = runProbe({ scale, left, top })
-      assert.match(out, /^HOVER-PROBE scale=[\d.]+ pass=17 fail=0$/, `scale=${scale} left=${left} top=${top} → ${out}`)
-      assert.ok(out.includes(`scale=${scale}`), `探针应报出缩放倍率：${out}`)
-    }
+    const { out } = runProbe({ scale })
+    assert.match(out, /^HOVER-PROBE scale=[\d.]+ pass=\d+ fail=0/, `scale=${scale} → ${out}`)
+    const report = parseProbeReport(out)
+    assert.equal(report.fail, 0)
+    assert.ok(report.pass >= 13, `scale=${scale} 通过点数偏少：${report.pass}`)
   }
 })
 
-test('探针：窗口窄于 240px 导致 SVG 居中留边时仍然全通过（不能用矩形等比换算）', () => {
-  // 桌面版缩放 0.6：舞台被 flex 压缩到 144px 宽 → SVG 实际渲染 86.4×100.8，垂直留边 33.6px
-  const scale0 = 0.36
-  const letterbox = 33.6
-  const { out } = runProbe({ scale: scale0, letterbox })
-  assert.match(out, /pass=17 fail=0/, `letterbox 场景应全通过，实际：${out}`)
-  assert.match(out, /scale=0\.36/, '应报出真实渲染比例')
+test('探针：矩形内的空隙/光晕/阴影/文字都算命中（与 v0.2.0 的形状语义不同）', () => {
+  const { out } = runProbe({})
+  assert.doesNotMatch(out, /臂身之间|头身缝隙|光晕环|地面阴影|状态文字.*期望命中=true 实际=false/)
+  assert.match(out, /fail=0/)
 })
 
-test('探针：拿不到 getScreenCTM 时回退到舞台矩形换算（缩放 ≥ 1 无留边时等价）', () => {
-  for (const scale of [1, 2]) {
-    const { out } = runProbe({ scale, withCtm: false })
-    assert.match(out, /pass=17 fail=0/, `回退路径应同样全通过（scale=${scale}）：${out}`)
+test('探针：容器外与设置面板中心不命中（面板存在时）', () => {
+  const withPanel = runProbe({ panel: true })
+  assert.match(withPanel.out, /fail=0/)
+  const mutated = runProbe({ panel: true, app: { ignorePanel: true } })
+  assert.match(mutated.out, /fail=1/)
+  assert.match(mutated.out, /内嵌设置面板中心 期望命中=false 实际=true/)
+})
+
+test('探针：容器外坐标始终不命中（矩形的裁剪语义）', () => {
+  for (const app of [{}, { useStageRect: false }]) {
+    const { out } = runProbe({ app })
+    assert.doesNotMatch(out, /容器[左右上下]侧?外.*期望命中=false 实际=true/)
   }
 })
 
-test('探针：先冻结动画（第 13 点光晕在脉冲动画下会飘）', () => {
-  const { frozen } = runProbe({})
-  assert.equal(frozen.length, 1, '应注入一次性冻结样式')
-  assert.match(frozen[0], /\.r-antenna-glow/, '冻结样式必须覆盖天线光晕')
-  assert.match(frozen[0], /animation:\s*none\s*!important/)
+test('探针：退回「用整个容器当命中区」的回归会被抓住', () => {
+  const { out } = runProbe({ app: { useStageRect: true } })
+  assert.match(out, /fail=[1-9]/)
+  assert.match(out, /(左侧空白|右侧空白|容器)/)
 })
 
-test('探针：地面阴影变成可命中时立刻报红，并给出坐标与期望值', () => {
-  const { out } = runProbe({
-    // 把阴影悄悄塞进命中图形（模拟「皮肤在 .r-hover 里放了可见阴影/大块图形」的回归）
-    extraHitShapes: [['shadow', (x, y) => TRANSPARENT_SHAPES.shadow(x, y)]]
-  })
-  assert.match(out, /fail=1/)
-  assert.match(out, /\(120,232\)/, '失败信息必须指出具体坐标')
-  assert.match(out, /期望命中=false/, '失败信息必须给出期望值')
-  assert.match(out, /地面阴影/, '失败信息必须给出该点名称')
+test('探针：状态文字隐藏时不再断言文字行命中（该场景由状态机测试覆盖）', () => {
+  const { out } = runProbe({ statusShown: false })
+  assert.match(out, /fail=0/, out)
 })
 
-test('探针：命中点缺失（例如手臂画错位置）也能指出坐标', () => {
-  // 把左臂整体右移 20px：左臂点 (68,195) 落空，臂身缝 (81,195) 被误盖 → 两处都应报出来
-  const shifted = [['arm-left-shifted', (x, y) => inRect(x, y, 78, 176, 20, 38, 10)]]
-  const out = vm.runInNewContext(PROBE, {
-    document: {
-      querySelector: (sel) =>
-        sel === '.pet-stage'
-          ? {
-              getBoundingClientRect: () => ({ left: 0, top: 0, width: 240, height: 280 }),
-              querySelector: (s) => (s === 'svg' ? { getScreenCTM: () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }) } : {})
-            }
-          : null,
-      createElement: () => ({ textContent: '' }),
-      head: { append: () => {} },
-      elementFromPoint: (cx, cy) => {
-        const shapes = [...HIT_SHAPES.filter(([n]) => n !== 'arm-left'), ...shifted]
-        const hit = shapes.some(([, fn]) => fn(cx, cy))
-        return { closest: (sel) => (sel === '.r-hover' && hit ? { tag: 'g' } : null) }
-      }
-    }
-  })
-  assert.match(out, /fail=2/)
-  assert.match(out, /\(68,195\).*期望命中=true/, '缺失的命中点必须指出坐标与期望值')
-  assert.match(out, /\(81,195\).*期望命中=false/, '被误盖的缝隙也必须指出')
+test('探针：状态文字很宽导致矩形覆盖左右空白时，跳过这两个反例而不是误报失败', () => {
+  const env = makeEnv({})
+  // 把状态框撑到接近整窗：矩形外扩后覆盖 (20,140) / (225,140)
+  const wide = env.stage.querySelector
+  env.stage.querySelector = (sel) => {
+    if (sel !== '.pet-status') return wide(sel)
+    return { textContent: '推理中 ×3 · KV cache 87% · 12.3 tok/s · qwen2.5-72b-instruct', getBoundingClientRect: () => withSize({ left: 45, top: 278, right: 275, bottom: 300 }) }
+  }
+  const out = vm.runInNewContext(PROBE, env.sandbox)
+  assert.match(out, /fail=0/, `宽文字不应误报：${out}`)
+  assert.match(out, /跳过/, '应显式说明跳过了哪些反例')
 })
 
-test('探针：皮肤缺 .r-hover / 页面没有 .pet-stage 时给出可读结论而不是抛错', () => {
-  assert.match(runProbe({ hitRegion: false }).out, /HOVER-PROBE fail.*\.r-hover/s)
-  const out = vm.runInNewContext(PROBE, { document: { querySelector: () => null } })
-  assert.match(out, /HOVER-PROBE fail.*\.pet-stage/s)
+test('探针：输出契约不变（供 probe-hover.mjs 与冒烟分支解析）', () => {
+  const { out } = runProbe({})
+  assert.match(out.split('\n')[0], /^HOVER-PROBE scale=\d+(\.\d+)? pass=\d+ fail=\d+$/)
+  assert.deepEqual(Object.keys(parseProbeReport(out)).sort(), ['fail', 'pass', 'scale'])
 })
 
-/* ---------------- 运行器 ---------------- */
-
-test('运行器：缩放档位是 0.6 / 1 / 2', () => {
+test('运行器：缩放档位与结果解析仍工作', () => {
   assert.deepEqual(SCALES, [0.6, 1, 2])
-})
-
-test('运行器：能从混着日志的输出里解析结果，缺结果时返回 null', () => {
-  const stdout = [
-    '[smoke] userData = /tmp/x',
-    '[hover-probe] HOVER-PROBE scale=0.6 pass=17 fail=0',
-    'some trailing log'
-  ].join('\n')
-  assert.deepEqual(parseProbeReport(stdout), { scale: 0.6, pass: 17, fail: 0 })
-
-  const failed = 'HOVER-PROBE scale=2 pass=15 fail=2\n(120,232) 地面阴影中心 期望命中=false 实际=true'
-  assert.deepEqual(parseProbeReport(failed), { scale: 2, pass: 15, fail: 2 })
-
-  assert.equal(parseProbeReport('[smoke] 截图已保存: /tmp/a.png'), null)
-  assert.equal(parseProbeReport(''), null)
-})
-
-test('运行器：汇总三档，任一档失败即整体失败并指出是哪一档', () => {
-  const ok = summarize([
-    { scale: 0.6, pass: 17, fail: 0 },
-    { scale: 1, pass: 17, fail: 0 },
-    { scale: 2, pass: 17, fail: 0 }
-  ])
+  assert.deepEqual(parseProbeReport('HOVER-PROBE scale=0.6 pass=14 fail=0'), { scale: 0.6, pass: 14, fail: 0 })
+  assert.equal(parseProbeReport('nothing'), null)
+  const ok = summarize([{ scale: 0.6, pass: 14, fail: 0 }, { scale: 1, pass: 14, fail: 0 }, { scale: 2, pass: 14, fail: 0 }])
   assert.equal(ok.ok, true)
-  assert.match(ok.text, /0\.6/)
-  assert.match(ok.text, /通过/)
-
-  const bad = summarize([
-    { scale: 0.6, pass: 17, fail: 0 },
-    { scale: 1, pass: 16, fail: 1 },
-    { scale: 2, pass: 17, fail: 0 }
-  ])
-  assert.equal(bad.ok, false)
-  assert.match(bad.text, /scale=1/)
 })

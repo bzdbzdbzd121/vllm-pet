@@ -88,10 +88,11 @@ const HOVER_RELATED = RULES.filter(
     declsOf(rule).some((d) => d.includes('var(--hover-opacity'))
 )
 
-const HOVER_BRANCH = /^\.pet-stage\.hover-fade-enabled\.is-hovering\s+\.pet-(scale|shadow)$/
+const FADE_TARGETS = ['.pet-scale', '.pet-shadow', '.pet-status-wrap']
+const HOVER_BRANCH = /^\.pet-stage\.hover-fade-enabled\.is-hovering\s+\.pet-(scale|shadow|status-wrap)$/
 
-test('命中：由锁存 class `.is-hovering` 通过独立分支分别淡化 .pet-scale 与 .pet-shadow', () => {
-  for (const target of ['.pet-scale', '.pet-shadow']) {
+test('命中：由锁存 class `.is-hovering` 分别淡化本体 / 阴影 / 状态文字包装层（三者同组）', () => {
+  for (const target of FADE_TARGETS) {
     const expected = `.pet-stage.hover-fade-enabled.is-hovering ${target}`
     const branch = BRANCHES.find((b) => b.branch === expected)
     assert.ok(branch, `缺少独立分支："${expected}"（逗号分组里混进 :hover 之类的改动必须被抓住）`)
@@ -105,7 +106,7 @@ test('命中：由锁存 class `.is-hovering` 通过独立分支分别淡化 .pe
 })
 
 test('过渡：挂在「未触发也成立」的独立分支上，160ms 淡出 + 180ms 离开宽限', () => {
-  for (const target of ['.pet-scale', '.pet-shadow']) {
+  for (const target of FADE_TARGETS) {
     const branch = BRANCHES.find((b) => b.branch === `.pet-stage.hover-fade-enabled ${target}`)
     assert.ok(branch, `缺少常驻过渡分支："${`.pet-stage.hover-fade-enabled ${target}`}"`)
     assert.equal(subjectOf(branch.branch), target)
@@ -118,17 +119,17 @@ test('过渡：挂在「未触发也成立」的独立分支上，160ms 淡出 +
   }
 })
 
-test('淡化主体白名单：悬停淡化的每条分支只能作用在 .pet-scale / .pet-shadow 上', () => {
+test('淡化主体白名单：只在 .pet-scale / .pet-shadow / .pet-status-wrap 上（不得整舞台、不得设置面板）', () => {
   assert.ok(HOVER_RELATED.length >= 2, '找不到悬停淡化规则')
   const bad = []
   for (const rule of HOVER_RELATED) {
     for (const branch of splitTopLevel(rule.selector, ',')) {
       const subject = subjectOf(branch)
-      if (subject !== '.pet-scale' && subject !== '.pet-shadow') bad.push(branch)
+      if (!FADE_TARGETS.includes(subject)) bad.push(branch)
     }
   }
   // 整舞台/状态文字/设置面板被淡化（例如 .pet-stage.hover-fade-enabled:has(...) { opacity } ）必须在此报红
-  assert.deepEqual(bad, [], `这些分支把淡化作用到了 .pet-scale / .pet-shadow 之外：${bad.join(' | ')}`)
+  assert.deepEqual(bad, [], `这些分支把淡化作用到了 .pet-scale/.pet-shadow/.pet-status-wrap 之外：${bad.join(' | ')}`)
 })
 
 test('不透明度声明只有一处形态：var(--hover-opacity, 0.4)，且不得用 !important 硬压', () => {
@@ -147,11 +148,11 @@ test('不透明度声明只有一处形态：var(--hover-opacity, 0.4)，且不�
   assert.deepEqual(badImportant, [], `悬停淡化规则里不允许 !important：${badImportant.join(' | ')}`)
 })
 
-test('不透明度变量只被 .pet-scale / .pet-shadow 消费（不许挂到舞台或子元素上）', () => {
+test('不透明度变量只被 .pet-scale / .pet-shadow / .pet-status-wrap 消费（不许挂到舞台或气泡本身）', () => {
   const consumers = BRANCHES.filter(({ rule }) => declsOf(rule).some((d) => d.includes('var(--hover-opacity')))
   assert.ok(consumers.length > 0, '找不到 --hover-opacity 的使用点')
-  const bad = consumers.filter(({ branch }) => !['.pet-scale', '.pet-shadow'].includes(subjectOf(branch)))
-  assert.deepEqual(bad.map((b) => b.branch), [], '--hover-opacity 只能写在 .pet-scale / .pet-shadow 的规则里')
+  const bad = consumers.filter(({ branch }) => !['.pet-scale', '.pet-shadow', '.pet-status-wrap'].includes(subjectOf(branch)))
+  assert.deepEqual(bad.map((b) => b.branch), [], '--hover-opacity 只能写在 .pet-scale / .pet-shadow / .pet-status-wrap 的规则里')
 })
 
 test('不得用舞台/缩放层/SVG 根做命中判定（旁边空白误触发的成因）', () => {
@@ -168,7 +169,7 @@ test('命中判定不得再用 :has()/容器 :hover（宠物自主动画会让�
   assert.doesNotMatch(CSS_RULES_ONLY, /\.r-hover\s*:hover/, '不得用 .r-hover:hover 作命中判定')
 })
 
-test('天线光晕排除出命中区：柔光不可见却能触发，属于精度漏洞', () => {
+test('天线光晕保持 pointer-events:none（矩形命中不再依赖它；这条锁住「光晕不是可点击目标」）', () => {
   const glow = BRANCHES.filter(({ branch }) => subjectOf(branch) === '.r-antenna-glow')
   assert.ok(glow.length > 0, '找不到 .r-antenna-glow 规则')
   assert.ok(
@@ -177,12 +178,23 @@ test('天线光晕排除出命中区：柔光不可见却能触发，属于精�
   )
 })
 
-test('状态文字与设置面板不参与淡化', () => {
-  const touched = BRANCHES.filter(({ branch }) => /\.pet-status|\.pet-settings/.test(branch))
-  for (const { branch, rule } of touched) {
-    assert.ok(
-      !declsOf(rule).some((d) => d.startsWith('opacity:var(--hover-opacity')),
-      `状态文字/设置面板不得使用悬停淡化变量：${branch}`
-    )
+test('状态文字经包装层参与淡化；气泡自身与设置面板都不参与', () => {
+  // 淡化变量只能出现在 .pet-status-wrap 上，不能直接写 .pet-status（那会和 0/1 显隐打架）
+  for (const { branch, rule } of BRANCHES) {
+    if (!declsOf(rule).some((d) => d.startsWith('opacity:var(--hover-opacity'))) continue
+    assert.equal(subjectOf(branch), subjectOf(branch), 'noop')
+    assert.match(subjectOf(branch), /^\.(pet-scale|pet-shadow|pet-status-wrap)$/, `淡化变量用在了意外的元素上：${branch}`)
+  }
+  // 包装层必须存在且不接收鼠标事件（否则会挡住拖动/右键）
+  const wrap = BRANCHES.find(({ branch }) => subjectOf(branch) === '.pet-status-wrap' && !branch.includes('is-hovering') && !branch.includes('hover-fade-enabled'))
+  assert.ok(wrap, '缺少 .pet-status-wrap 基础规则')
+  assert.ok(declsOf(wrap.rule).includes('pointer-events:none'), '包装层不得接收鼠标事件')
+  assert.ok(declsOf(wrap.rule).includes('position:absolute'))
+  assert.ok(declsOf(wrap.rule).includes('inset:0'), '包装层必须铺满舞台，保持气泡原定位')
+
+  // 设置面板：任何一条悬停淡化分支都不得作用到它
+  for (const { branch } of BRANCHES) {
+    if (!branch.includes('hover-fade-enabled') && !branch.includes('is-hovering')) continue
+    assert.doesNotMatch(branch, /\.pet-settings/, `设置面板不得参与淡化：${branch}`)
   }
 })

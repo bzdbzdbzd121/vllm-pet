@@ -115,26 +115,30 @@ tests/*.test.mjs            node --test，89 个用例
 8. **计数只取"现算"的来源，不取推送快照**：SGLang 的 Prometheus gauge 空闲后会冻结（§4.10），
    所以 running/waiting/KV 以 `/v1/loads`（请求时现算）为准，`/metrics` 只提供 counter 与吞吐。
    新增后端时先分清：这个数字是"请求时现算"还是"最后一次推送"？后者不能用来判断"现在忙不忙"。
-9. **悬停命中用 `.r-hover` 的绘制图形，由指针事件锁存，不要自己算坐标也不要交回 CSS `:hover`**：
-   「鼠标悬停在宠物上变透明」的状态由 `pet.js` 在指针事件里用
-   `e.target.closest('.r-hover')` 判定，写到舞台的 `.is-hovering` class；CSS 只负责
-   `.pet-stage.hover-fade-enabled.is-hovering .pet-scale/.pet-shadow { opacity: var(--hover-opacity) }`
-   与 160ms / 180ms 过渡。
-   - `pointermove` 是主路径；`pointerover` **只吃一次**（加载/窗口重新获得焦点时指针可能已经
-     停在本体上，此时不会再有 pointermove），吃完即解除武装 —— 因为 Chromium 在「指针没动、
-     元素随动画变化」时也会派发 pointerover，每次都采信就等于把抖动引回来（实测 idle 3–5 次/3.3s、
-     celebrate 13 次）。
-   - **不要**改回 `:has(.r-hover:hover)`（或 `.r-hover:hover`）：伪类会跟随命中测试**逐帧重算**，
-     而宠物自身的 bob/sway/celebrate 一直在移动轮廓，静止的指针会被扫过 → opacity 在设定值与 1
-     之间呼吸式明暗（实测 3 次/3.3s，最坏连续失效 2.4–3.9s，180ms 离开宽限盖不住）。
-   - **不要**改成 `.pet-stage:hover` / `.pet-scale:hover` / `.r-svg:hover` 或包围盒判断：这些盒子与
-     SVG 根铺满 240×280 窗口，会让旁边的空白也触发。
-   - **不要**在 `.r-hover` 里放铺满画布的大面积透明/不可见图形（命中看几何不看像素透明度）；
-     不可见装饰请加 `pointer-events: none` 或放到分组外。
+9. **悬停命中是「矩形 + 指针事件锁存」，不要交回 CSS 伪类**：
+   「鼠标悬停在宠物上变透明」的命中区 = `union(本体, 地面阴影, 当前可见状态文字)` 外扩
+   `12×缩放` 像素，再裁剪到宠物容器（`src/shared/hover-region.js` 纯函数；`pet.js#getHoverRect()`）。
+   判定只在指针事件里发生（事件挂**容器**：桌面 `#app`、预览 `#pet-holder`），结果写成舞台的
+   `.is-hovering` class；CSS 只负责
+   `.pet-stage.hover-fade-enabled.is-hovering .pet-scale/.pet-shadow/.pet-status-wrap { opacity: var(--hover-opacity) }`
+   与 160ms / 180ms 过渡。命中矩形是**懒计算 + 脏标记**（`setStatusLine/setScale/setStatusFontSize/
+   setState/celebrate/applySkin` 置脏），不在每帧、不在定时器里重算。
+   - 状态文字有独立包装层 `.pet-status-wrap`：外层负责悬停淡化、气泡自身保留 0/1 显隐与 0.25s，
+     两个 opacity 相乘 —— **不要**把淡化直接写到 `.pet-status` 上（隐藏文字时会被拉出来）。
+   - `pointermove` 是主路径；`pointerover` **只吃一次**（加载/窗口重新获得焦点时指针可能已经停在
+     本体上，此时不会再有 pointermove），吃完即解除武装 —— 因为 Chromium 在「指针没动、元素随动画
+     变化」时也会派发 pointerover，每次都采信就等于把抖动引回来（实测 idle 3–5 次/3.3s、celebrate 13 次）。
+   - **不要**改回 `:has(.r-hover:hover)`（或容器 `:hover`）：伪类会跟随命中测试**逐帧重算**，
+     宠物自身的 bob/sway/celebrate 一直在动，静止指针会被扫过 → opacity 在设定值与 1 之间呼吸式明暗
+     （实测 3 次/3.3s，最坏连续失效 2.4–3.9s，180ms 离开宽限盖不住）。
+   - **不要**改成 `.pet-stage:hover` / `.pet-scale:hover` / `.r-svg:hover` 这类「整舞台/整窗」命中：
+     那会把矩形外的空白也包进来（用户最初抱怨的就是这个）。
+   - 外扩量不是保险箱而是**位移预算**：它覆盖 bob ±7、sway ±4.3、shake ±1.6；celebrate 的 −26px 超出预算，
+     静止在矩形边界上遇到庆祝仍可能有一次过渡（可接受，属宠物真的移开）。
    - 复位路径必须齐全：`pointerleave`、`pointercancel`（触摸被打断）、`window.blur`、`visibilitychange`、
-     `power:pause`、关闭开关、换肤都要清 `.is-hovering`，否则会残留淡化。
-   - 命中相关的回归用 `node scripts/probe-hover.mjs`（几何）与「指针不动采样 opacity」
-     （状态机：指针只移动一次后不再发事件，150ms 采样 `getComputedStyle('.pet-scale').opacity`
+     `power:pause`、关闭开关都要清 `.is-hovering`；换肤只需重算矩形（状态保留）。
+   - 命中相关的回归用 `node scripts/probe-hover.mjs`（矩形语义、合成指针事件端到端）与「指针不动采样
+     opacity」（状态机：指针只移动一次后不再发事件，150ms 采样 `getComputedStyle('.pet-scale').opacity`
      3.3s，`|Δ|>0.05` 的次数必须为 0）。
 
 ## 4. ⚠️ 排坑指南（都踩过，别再踩）

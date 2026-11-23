@@ -6,6 +6,7 @@
  */
 import { applySkinToStage, bobDurationFor } from '../skins/skin-loader.js'
 import { normalizeHoverFade } from '../../shared/hover-fade.js'
+import { computeHoverRect, containsPoint } from '../../shared/hover-region.js'
 
 const VISUAL_STATES = ['idle', 'sleeping', 'connecting', 'busy-1', 'busy-2', 'busy-3', 'offline']
 const CELEBRATE_MS = 950
@@ -40,11 +41,14 @@ export class PetView {
   constructor(container, { skin, scale = 1 } = {}) {
     if (!skin) throw new Error('PetView 需要 skin')
     this.skin = skin
+    this.container = container
     this.state = 'idle'
     this._celebrateTimer = 0
-    this._hoverWarned = false
+    this._scale = 1
     this._hovering = false
     this._hoverBound = false
+    this._hoverRect = null
+    this._hoverRectDirty = true
 
     this.stage = document.createElement('div')
     this.stage.className = 'pet-stage st-idle'
@@ -62,7 +66,13 @@ export class PetView {
     this.statusEl = document.createElement('div')
     this.statusEl.className = 'pet-status'
 
-    this.stage.append(this.shadowWrap, this.scaleWrap, this.statusEl)
+    // 状态气泡外面再加一层：外层只管「悬停淡化」，内层保留 0/1 显隐与 0.25s 过渡，
+    // 两个 opacity 相乘、互不干扰（直接把淡化写到气泡上会把隐藏的文字重新拉出来）。
+    this.statusWrap = document.createElement('div')
+    this.statusWrap.className = 'pet-status-wrap'
+    this.statusWrap.append(this.statusEl)
+
+    this.stage.append(this.shadowWrap, this.scaleWrap, this.statusWrap)
     container.append(this.stage)
 
     applySkinToStage(this.stage, skin)
@@ -78,6 +88,7 @@ export class PetView {
     this.state = visualState
     this.stage.classList.add(`st-${visualState}`)
     this._applyBobDuration()
+    this.markHoverRectDirty()
   }
 
   getState() {
@@ -92,8 +103,10 @@ export class PetView {
     void this.stage.offsetWidth
     this.stage.classList.add('is-celebrating')
     this._burstSparkles()
+    this.markHoverRectDirty()
     this._celebrateTimer = setTimeout(() => {
       this.stage.classList.remove('is-celebrating')
+      this.markHoverRectDirty()
     }, CELEBRATE_MS)
   }
 
@@ -102,6 +115,7 @@ export class PetView {
     this.statusEl.textContent = text || ''
     this.stage.classList.toggle('show-status', Boolean(text))
     this._fitStatusWidth()
+    this.markHoverRectDirty()
   }
 
   /** 整体缩放：以顶部为原点向下放大（状态文本在舞台下方，窗口底部有留白） */
@@ -113,6 +127,7 @@ export class PetView {
     // 状态文本反向缩放：字号不随体型缩放而变小
     this.statusEl.style.transform = `translate(-50%, -100%) scale(${1 / s})`
     this._fitStatusWidth()
+    this.markHoverRectDirty()
   }
 
   /** 状态文本字号（px，与体型缩放解耦） */
@@ -121,18 +136,24 @@ export class PetView {
     this._statusFontSize = Math.min(24, Math.max(9, v || 11))
     this.statusEl.style.fontSize = `${this._statusFontSize}px`
     this._fitStatusWidth()
+    this.markHoverRectDirty()
   }
 
   /**
    * 气泡宽度贴合文本：用隐藏 span 按真实排版实测字宽（视觉 px）。
    * 注意：气泡在 scale(s) 的舞台内、自身反向 scale(1/s)，净变换 = 1，
    * 因此样式宽度直接等于视觉宽度（content-box，border = 宽 + 20px padding）。
-   * 超上限（窗口宽-10px）时定宽，由 CSS 换行（最多两行）。
+   * 上限按**容器**宽度算（桌面是窗口，预览页是卡片）：缩放 < 1 时舞台会被压窄，
+   * 用舞台宽会提前掉行；也避免预览页用整页宽算出过大气泡。
    */
   _fitStatusWidth() {
     const doc = this.stage.ownerDocument
-    const vw = doc?.defaultView?.innerWidth || 240
-    const maxBorder = Math.max(120, vw - 10)
+    // 用布局宽度（clientWidth）而非 getBoundingClientRect().width：后者含祖先 CSS transform
+    //（预览页 #pet-holder 是 scale(1.15)），拿它跟未缩放的字宽比较会让气泡按 1.15 倍溢出卡片。
+    const layoutW = Number(this.container?.clientWidth) || 0
+    const rectW = this.container?.getBoundingClientRect?.()?.width || 0
+    const cw = layoutW > 0 ? layoutW : rectW > 0 ? rectW : 240
+    const maxBorder = Math.max(120, cw - 10)
     const text = this.statusEl.textContent
     let content = 16
     if (text && doc) {
@@ -160,11 +181,8 @@ export class PetView {
       this.shadowWrap.innerHTML = shadow
     }
     this._applyBobDuration()
-    // 换肤会整体替换本体 SVG：新皮肤可能没有 .r-hover，需重新检查命中区
-    // （开关状态以 stage 上的 class 为单一来源，不另存副本）
-    // 锁存也要清：命中区几何变了，旧状态不再成立（缺钩子时应为不淡化）
-    this.clearHoverFade()
-    if (this.stage.classList.contains('hover-fade-enabled')) this._warnIfNoHitRegion()
+    // 命中区是矩形：换肤只影响几何 → 标脏重算，状态保留（不再清锁存、不再检查 .r-hover）
+    this.markHoverRectDirty()
   }
 
   /**
@@ -181,37 +199,33 @@ export class PetView {
     this.stage.classList.toggle('hover-fade-enabled', enabled)
     // 关闭时一并清掉锁存，否则「关→开」会把关闭前的悬停状态带回来
     if (!enabled) this.clearHoverFade()
-    if (enabled) this._warnIfNoHitRegion()
   }
 
   /**
-   * 绑定悬停判定所需的事件。监听挂在 stage 上：换肤只替换本体 SVG，挂在 .r-hover 上会丢。
+   * 绑定悬停判定所需的事件。监听挂在**容器**上（桌面 #app、预览 #pet-holder）：
+   * 命中区是矩形，容器是天然的事件边界；这样状态文字溢出舞台时也能收到事件。
    *
-   * - `pointermove`：指针移动时的判定（主路径）
-   * - `pointerover`：**只吃一次**（加载/窗口重新获得焦点时指针可能已经停在本体上，此时不会有
-   *   pointermove）。为什么要限量：Chromium 在「指针没动、元素随动画变化」时也会派发 pointerover，
-   *   每次都采信就等于把抖动引回来（实测 idle 3–5 次/3.3s、celebrate 13 次）。
-   *   所以进场后立即解除武装，后续只由 pointermove 驱动状态。
+   * - `pointermove`：主路径（矩形判定）
+   * - `pointerover`：**只吃一次**：加载/窗口重新获得焦点时指针可能已经停在本体上，
+   *   此时不会有 pointermove。为什么要限量：Chromium 在「指针没动、元素随动画变化」时
+   *   也会派发 pointerover，每次都采信就等于把抖动引回来（实测 idle 3–5 次/3.3s）。
    * - 离开/取消：pointerleave、pointercancel（触摸被打断）→ 复位。
-   * - 窗口级：blur、页面隐藏 → 复位并**重新武装**一次 pointerover（切回窗口时可能已在本体上）。
+   * - 窗口级：blur、页面隐藏 → 复位并重新武装一次 pointerover。
    */
   _bindHoverFade() {
     if (this._hoverBound) return
     this._hoverBound = true
     this._hoverOverArmed = true
-    const settle = (e) => {
-      const target = e?.target
-      this._setHovering(!!(target && typeof target.closest === 'function' && target.closest('.r-hover')))
-    }
-    this.stage.addEventListener('pointermove', settle, { passive: true })
-    this.stage.addEventListener('pointerover', (e) => {
+    const settle = (e) => this.evaluateHover(e)
+    this.container.addEventListener('pointermove', settle, { passive: true })
+    this.container.addEventListener('pointerover', (e) => {
       if (!this._hoverOverArmed) return
       this._hoverOverArmed = false
       settle(e)
     })
-    // 指针离开舞台（含快速移出窗口）、触摸被系统打断（pointercancel）→ 复位
-    this.stage.addEventListener('pointerleave', () => this.clearHoverFade())
-    this.stage.addEventListener('pointercancel', () => this.clearHoverFade())
+    // 指针离开容器（含快速移出窗口）、触摸被系统打断（pointercancel）→ 复位
+    this.container.addEventListener('pointerleave', () => this.clearHoverFade())
+    this.container.addEventListener('pointercancel', () => this.clearHoverFade())
     // 失焦 / 页面隐藏（最小化、切桌面、锁屏）→ 复位，并允许下个 pointerover 重新建立
     window.addEventListener('blur', () => {
       this.clearHoverFade()
@@ -224,6 +238,38 @@ export class PetView {
     })
   }
 
+  /** 标脏：下一次判定前重算命中矩形（只在几何可能变化时调用，不逐帧重算） */
+  markHoverRectDirty() {
+    this._hoverRectDirty = true
+  }
+
+  /**
+   * 算命中矩形（懒计算 + 脏标记）：union(本体, 阴影, 当前可见文字) → 外扩 12×缩放 → 裁剪到容器。
+   * `.r-hover` 只是「本体」的首选来源；缺失时退回 `.pet-scale`，再退回容器（不告警、不失效）。
+   */
+  getHoverRect() {
+    if (this._hoverRect && !this._hoverRectDirty) return this._hoverRect
+    const rectOf = (el) => {
+      const r = el?.getBoundingClientRect?.()
+      return r && (r.width > 0 || r.height > 0) ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom } : null
+    }
+    const art = rectOf(this.stage.querySelector('.r-hover')) || rectOf(this.scaleWrap) || null
+    // 阴影必须取绘制图形（.pet-shadow 是 inset:0 的满舞台层，取它会撑满整窗）
+    const shadow = rectOf(this.stage.querySelector('.pet-shadow .r-shadow'))
+    const statusShown = this.stage.classList.contains('show-status') && Boolean(this.statusEl.textContent)
+    const status = statusShown ? rectOf(this.statusEl) : null
+    this._hoverRect = computeHoverRect({ art, shadow, status }, rectOf(this.container), this._scale)
+    this._hoverRectDirty = false
+    return this._hoverRect
+  }
+
+  /** 单次悬停判定：在矩形内，且不落在内嵌设置面板上 */
+  evaluateHover(e) {
+    const rect = this.getHoverRect()
+    const onPanel = Boolean(e?.target?.closest?.('.pet-settings'))
+    this._setHovering(!onPanel && containsPoint(rect, e?.clientX, e?.clientY))
+  }
+
   /** 锁存悬停状态：只在指针事件里调用；状态未变时不重复写 DOM */
   _setHovering(over) {
     const next = !!over
@@ -232,20 +278,9 @@ export class PetView {
     this.stage.classList.toggle('is-hovering', next)
   }
 
-  /** 清除悬停锁存（失焦/锁屏/页面隐藏/关闭开关/换肤时调用） */
+  /** 清除悬停锁存（失焦/锁屏/页面隐藏/关闭开关时调用） */
   clearHoverFade() {
     this._setHovering(false)
-  }
-
-  /** 皮肤缺 .r-hover 时悬停不会生效：只提示一次，不报错 */
-  _warnIfNoHitRegion() {
-    // 延到下一个微任务再查 DOM：一次配置应用里 setHoverFade 之后紧接的就是 applySkin
-    //（整体替换本体 SVG），同步检查看到的是换肤前的旧 DOM，会误报「刚换到好皮肤却说缺分组」。
-    queueMicrotask(() => {
-      if (this._hoverWarned || this.stage.querySelector('.r-hover')) return
-      this._hoverWarned = true
-      console.warn('[vllm-pet] 皮肤缺少 .r-hover 分组，悬停变透明不会生效（见 src/renderer/skins/README.md）')
-    })
   }
 
   _applyBobDuration() {

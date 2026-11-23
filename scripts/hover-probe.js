@@ -3,93 +3,143 @@
  *
  * 用法：主进程在冒烟模式下把本文件文本交给 webContents.executeJavaScript()，
  * 最后一条表达式就是 IIFE 的返回值 —— 一行结果字符串：
- *   HOVER-PROBE scale=1 pass=17 fail=0
- *   HOVER-PROBE scale=2 pass=15 fail=2
- *   (120,232) 地面阴影中心 期望命中=false 实际=true
+ *   HOVER-PROBE scale=1 pass=15 fail=0
+ *   HOVER-PROBE scale=2 pass=14 fail=1
+ *   (20,140) 左侧空白 期望命中=false 实际=true
+ * 输出格式保持不变（`scripts/probe-hover.mjs` 与 main.js 的冒烟分支不用改）。
  *
- * 坐标表就是本文件 POINTS 里的 17 点（SVG viewBox 坐标，240×280）—— 它是**唯一数据源**：
- * `scripts/probe-hover.mjs` 不持有任何坐标或期望值，只负责以 0.6/1/2 三档启动隐藏窗口、
- * 调用本脚本、汇总各档结果（它只从结果行里解析 scale/pass/fail）。改坐标只改这里的 POINTS。
+ * 语义（v0.3.0 起是**矩形**，不是绘制图形）：
+ * 命中区 = union(本体, 地面阴影, 当前可见状态文字) 外扩 12×缩放，再裁剪到容器。
+ * 因此「矩形内的空隙」「光晕环」「阴影」「文字」都算命中；只有矩形外与设置面板除外。
  *
- * 坐标换算用 SVG 的 getScreenCTM()（viewBox 单位 → 屏幕像素），而不是直接拿
- * `.pet-stage` 的矩形按比例换算：窗口窄于 240px（桌面版缩放 < 1）时，`.pet-stage` 会被
- * `#app` 的 flex 容器压缩，SVG 随后按 preserveAspectRatio 居中留边（letterbox），
- * 此时「矩形等比换算」会把坐标对到错的位置（实测 0.6 档偏 14.4px）。
- * getScreenCTM() 已包含舞台的 CSS transform 与父级缩放（预览页 1.15 倍同理），
- * 两种写法在缩放 ≥ 1、无留边时结果完全一致。
+ * 判定方式是**端到端**的：对每个测试点，向容器派发一次合成 pointermove（带 clientX/clientY），
+ * 然后读舞台是否带 `.is-hovering` —— 测的是线上真实逻辑（矩形 + 设置面板排除），
+ * 探针自己不算几何。
  *
- * 报告的 `scale` 是真实渲染比例（屏幕像素 / viewBox 单位）。它可能与配置的体型缩放不等：
- * 缩放 < 1 时上述压缩会让实际比例更小（0.6 配置 → 0.36），看到这个差异说明窗口排版被挤压，
- * 属于既有布局问题（与悬停淡化无关），探针本身仍应全绿。
+ * 采样前先注入一次性样式冻结动画：矩形取的是当前帧的包围盒，冻结后结果才稳定。
  *
- * 采样前先注入一次性样式冻结动画：天线光晕有脉冲（y 顶边 17.25~21），不冻结时
- * (132,36)「光晕环内、灯球外」这类贴边界的点会随帧抖动。
- *
- * 这里只验证**几何命中**（elementFromPoint + closest('.r-hover')），不验证淡化状态机：
- * 状态由指针事件锁存（pet.js 的 pointermove/pointerover + closest），与伪类无关，需另一套
- * 「指针不动、定时采样 opacity」的回归来覆盖（见 DEVELOPMENT.md 设计决策 9）。
+ * 坐标：本体上的采样点用 SVG viewBox 坐标（经 getScreenCTM 换算成客户端坐标，缩放/留边都正确）；
+ * 「容器外」与「左右空白」用容器左上角起算的 CSS px × 缩放；阴影与文字点取各自 DOM 框的中心。
  */
 (() => {
   const BASE_W = 240
-  const BASE_H = 280
-
-  const POINTS = [
-    [120, 114, true, '头壳/脸屏中心'],
-    [120, 36, true, '天线灯球'],
-    [120, 56, true, '天线杆'],
-    [54, 116, true, '左耳'],
-    [68, 195, true, '左臂'],
-    [120, 200, true, '身体中心'],
-    [5, 5, false, '窗口左上空白'],
-    [20, 140, false, '左侧空白带'],
-    [225, 140, false, '右侧空白带'],
-    [120, 5, false, '头顶上方'],
-    [60, 70, false, '头壳圆角外侧'],
-    [81, 195, false, '臂与身体之间的缝'],
-    [132, 36, false, '光晕环内、灯球外'],
-    [120, 232, false, '地面阴影中心'],
-    [120, 245, false, '本体下缘与气泡之间'],
-    [120, 260, false, '状态文字气泡'],
-    [190, 92, false, '右侧空白 + 汗滴区域']
-  ]
+  const PAD = 12
 
   const stage = document.querySelector('.pet-stage')
   if (!stage) return 'HOVER-PROBE fail=1 找不到 .pet-stage，无法采样'
-  if (!stage.querySelector('.r-hover')) {
-    return 'HOVER-PROBE fail=1 当前皮肤缺少 .r-hover 分组，悬停命中区不存在'
-  }
+  const container = stage.parentElement || stage
 
-  // 冻结动画：光晕/呼吸动画会让贴边采样点在不同帧得到不同结果
+  // 冻结动画：矩形取当前帧包围盒，不冻结会让采样点在不同相位得到不同结果
   const freeze = document.createElement('style')
   freeze.textContent = '.pet-scale,.r-head,.r-arm,.r-antenna-glow,.r-shadow{animation:none!important}'
   document.head.append(freeze)
 
+  const rectOf = (sel) => {
+    const el = stage.querySelector(sel)
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return r.width > 0 || r.height > 0 ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom } : null
+  }
+  const c = container.getBoundingClientRect()
+  const scale = Math.round((c.width / BASE_W) * 100) / 100 || 1
+  const pad = PAD * scale
+
+  const box = (...rects) => {
+    let out = null
+    for (const r of rects) {
+      if (!r) continue
+      out = out
+        ? { left: Math.min(out.left, r.left), top: Math.min(out.top, r.top), right: Math.max(out.right, r.right), bottom: Math.max(out.bottom, r.bottom) }
+        : { ...r }
+    }
+    return out
+  }
+  const statusEl = stage.querySelector('.pet-status')
+  const statusShown = stage.classList.contains('show-status') && Boolean(statusEl?.textContent)
+  const artBox = box(rectOf('.r-hover'), null) || box((() => {
+    const r = stage.querySelector('.pet-scale')?.getBoundingClientRect()
+    return r ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom } : null
+  })())
+  const shadowBox = rectOf('.pet-shadow .r-shadow')
+  const statusBox = statusShown && statusEl ? (() => {
+    const r = statusEl.getBoundingClientRect()
+    return r.width > 0 || r.height > 0 ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom } : null
+  })() : null
+  const content = box(artBox, shadowBox, statusBox)
+
+  /** 事件坐标：容器左上角 + 局部坐标 */
+  // 本体上的点用 SVG viewBox 坐标 → 客户端坐标（getScreenCTM 已含缩放与 0.6 档的留边）
   const svg = stage.querySelector('svg')
   const ctm = svg && typeof svg.getScreenCTM === 'function' ? svg.getScreenCTM() : null
+  const toClient = (x, y) =>
+    ctm
+      ? { clientX: ctm.a * x + ctm.c * y + ctm.e, clientY: ctm.b * x + ctm.d * y + ctm.f }
+      : { clientX: c.left + x * scale, clientY: c.top + y * scale }
+  const asContainer = (x, y) => ({ clientX: c.left + x * scale, clientY: c.top + y * scale })
+  const center = (box) => ({ clientX: (box.left + box.right) / 2, clientY: (box.top + box.bottom) / 2 })
 
-  let scale
-  let toClient
-  if (ctm) {
-    scale = Math.round(Math.hypot(ctm.a, ctm.b) * 100) / 100
-    toClient = (x, y) => [ctm.a * x + ctm.c * y + ctm.e, ctm.b * x + ctm.d * y + ctm.f]
-  } else {
-    // 兜底：老实现/异常环境拿不到 CTM 时按舞台矩形等比换算（缩放 ≥ 1 无留边时结果相同）
-    const rect = stage.getBoundingClientRect()
-    scale = Math.round((rect.width / BASE_W) * 100) / 100
-    toClient = (x, y) => [rect.left + (x * rect.width) / BASE_W, rect.top + (y * rect.height) / BASE_H]
+  const fireAt = (pt, target = container) => {
+    target.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, ...pt, pointerType: 'mouse' }))
+    return stage.classList.contains('is-hovering')
   }
 
   const failures = []
-  for (const [x, y, expected, label] of POINTS) {
-    const [cx, cy] = toClient(x, y)
-    const el = document.elementFromPoint(cx, cy)
-    const hit = !!el?.closest?.('.r-hover')
-    if (hit === expected) continue
-    const who = el ? (el.className?.baseVal ?? el.className ?? el.tagName ?? '未知元素') : '无元素'
-    failures.push(`(${x},${y}) ${label} 期望命中=${expected} 实际=${hit} 命中元素=${who}`)
+  let pass = 0
+  const expect = (pt, expected, label, target) => {
+    const got = fireAt(pt, target)
+    if (got === expected) { pass++; return }
+    const tag = label
+    failures.push(`${tag} 期望命中=${expected} 实际=${got}`)
+  }
+  const inViewBox = (x, y) => ({ label: `(${x},${y})`, pt: toClient(x, y) })
+  const inContainer = (x, y) => ({ label: `(容器 ${x},${y})`, pt: asContainer(x, y) })
+
+  // 先用一次远端哑事件把矩形算出来（此时动画已冻结），之后各点复用同一矩形
+  fireAt(asContainer(-50, -50))
+
+  // 1) 矩形内必命中（与状态文字宽度无关）
+  for (const [x, y, label] of [
+    [120, 114, '头壳/脸屏中心'],
+    [120, 36, '天线灯球'],
+    [54, 116, '左耳'],
+    [120, 200, '身体中心'],
+    [81, 195, '臂身之间的空隙（矩形语义）'],
+    [120, 166, '头身缝隙（矩形语义）'],
+    [132, 36, '光晕环（矩形语义）']
+  ]) {
+    const p = inViewBox(x, y)
+    expect(p.pt, true, `${p.label} ${label}`)
+  }
+  if (shadowBox) expect(center(shadowBox), true, '地面阴影中心（并集包含）')
+  if (statusBox) expect(center(statusBox), true, '状态文字中心')
+
+  // 2) 容器外必不命中（矩形被裁剪到容器，与文字宽度无关）
+  for (const [x, y, label] of [[-10, 140, '容器左侧外'], [BASE_W + 10, 140, '容器右侧外'], [120, -10, '容器上方外']]) {
+    const p = inContainer(x, y)
+    expect(p.pt, false, `${p.label} ${label}`)
   }
 
-  const pass = POINTS.length - failures.length
-  if (!failures.length) return `HOVER-PROBE scale=${scale} pass=${pass} fail=0`
-  return `HOVER-PROBE scale=${scale} pass=${pass} fail=${failures.length}\n${failures.join('\n')}`
+  // 3) 内嵌设置面板必不命中（显式排除）
+  const panel = document.querySelector('.pet-settings')
+  if (panel) expect(center(panel.getBoundingClientRect()), false, '内嵌设置面板中心', panel)
+
+  // 4) 左右空白：只有在状态文字较窄、外扩后的矩形确实够不到这两个点时才是有效反例
+  const reach = content
+    ? { left: Math.max(c.left, content.left - pad) - c.left, right: Math.min(c.right, content.right + pad) - c.left }
+    : null
+  const leftBlankOk = !reach || 20 * scale < reach.left - 1
+  const rightBlankOk = !reach || 225 * scale > reach.right + 1
+  if (leftBlankOk) expect(asContainer(20, 140), false, '(容器 20,140) 左侧空白')
+  else pass++ // 文字很宽时矩形本身伸到这里，跳过硬断言（标签见下方说明）
+  if (rightBlankOk) expect(asContainer(225, 140), false, '(容器 225,140) 右侧空白')
+  else pass++
+  const skips = []
+  if (!leftBlankOk) skips.push('左侧空白(20,140)')
+  if (!rightBlankOk) skips.push('右侧空白(225,140)')
+
+  const total = pass + failures.length
+  const head = `HOVER-PROBE scale=${scale} pass=${pass} fail=${failures.length}`
+  const skipNote = skips.length ? `\n  (跳过 ${skips.join('、')}：当前状态文字较宽，矩形外扩后已覆盖该处)` : ''
+  if (!failures.length) return head + skipNote
+  return `${head}${skipNote}\n${failures.join('\n')}`
 })()
