@@ -1,8 +1,8 @@
 /**
  * hover-region.js — 悬停命中矩形的纯计算（零依赖、不碰 DOM，浏览器/Node 通用）
  *
- * 命中区语义：把「本体 + 地面阴影 + 当前可见状态文字」的包围盒取并集，
- * 外扩 12×缩放 像素，再裁剪到宠物容器内。判定用闭区间。
+ * 命中区语义：`union( (本体 ∪ 地面阴影) 外扩 12×缩放 , 当前可见状态文字原盒 )`，
+ * 再裁剪到宠物容器内。判定用闭区间。**状态文字不参与外扩**（见 computeHoverRect 注释）。
  *
  * 为什么要外扩：宠物自身的 bob/sway/shake/celebrate 会让轮廓在 ±4~7px 内移动
  *（celebrate 更高），外扩把这段位移吃掉，静止指针才不会在矩形边界上反复进出。
@@ -86,7 +86,11 @@ export function hoverPad(scale) {
 }
 
 /**
- * 命中矩形：union(art, shadow, status) → 外扩 → 裁剪到容器。
+ * 命中矩形：`clamp( union(pad(art ∪ shadow), status), container )`。
+ *
+ * 外扩只作用于「本体 + 阴影」（吃掉 bob/sway/shake 的位移），**状态文字用它自己的盒子、不再外扩**：
+ * 给文字加外扩会把窗口底部的留白吃掉（1 档文字底 272 + 12 > 280 → 裁到窗底），
+ * 矩形一旦贴满窗口，「从状态文字上移开」就再也恢复不了（用户实测缺陷）。
  * 全部取不到时退回容器（保证「至少有窗口范围」这一兜底语义）。
  * @param {{ art?: Rect|null, shadow?: Rect|null, status?: Rect|null }} parts
  * @param {Rect|null} container
@@ -94,9 +98,10 @@ export function hoverPad(scale) {
  * @returns {Rect|null}
  */
 export function computeHoverRect(parts, container, scale) {
-  const content = unionRect(parts?.art, parts?.shadow, parts?.status)
+  const body = unionRect(parts?.art, parts?.shadow)
+  const content = unionRect(body ? padRect(body, hoverPad(scale)) : null, parts?.status)
   if (!content) return container || null
-  return clampRect(padRect(content, hoverPad(scale)), container)
+  return clampRect(content, container)
 }
 
 /**

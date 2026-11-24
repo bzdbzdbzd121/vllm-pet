@@ -61,14 +61,38 @@ test('containsPoint：闭区间（边界算命中），null 不算命中', () =>
   assert.equal(containsPoint(null, 20, 30), false)
 })
 
-test('computeHoverRect：并集 → 外扩 → 裁剪（按方案附录 A 的顺序）', () => {
+test('computeHoverRect：本体/阴影外扩 → 并入文字原盒 → 裁剪（顺序不可换）', () => {
   const art = r(48, 17, 192, 225)
   const shadow = r(76, 223, 164, 241)
   const status = r(92, 248, 149, 272)
   const container = r(0, 0, 240, 280)
   const rect = computeHoverRect({ art, shadow, status }, container, 1)
-  // 并集 = (48,17,192,272)；外扩 12 → (36,5,204,284)；裁剪到容器 → (36,5,204,280)
-  assert.deepEqual(rect, r(36, 5, 204, 280))
+  // 本体/阴影并集 = (48,17,192,241)；外扩 12 → (36,5,204,253)；并入文字原盒 (92,248,149,272)
+  // → (36,5,204,272)；裁剪到容器不变。**文字不加外扩**：底边停在 272（不是 280）。
+  assert.deepEqual(rect, r(36, 5, 204, 272))
+})
+
+test('computeHoverRect：状态文字不加外扩（加了会吃掉窗口底部留白 → 从文字移开恢复不了）', () => {
+  const container = r(0, 0, 240, 280)
+  const art = r(48, 17, 192, 225)
+  // 文字底 272 = 窗底 280 之上 8px：矩形底必须还是 272（旧实现会算成 284 → 裁到 280）
+  const rect = computeHoverRect({ art, status: r(86, 247, 154, 272) }, container, 1)
+  assert.equal(rect.bottom, 272, '底边 = 文字原盒底边，不得被外扩拉到窗口底')
+  assert.equal(containsPoint(rect, 120, 274), false, '文字下方 2px（窗口内）已不命中')
+  assert.equal(containsPoint(rect, 120, 271), true, '文字盒内仍命中')
+})
+
+test('computeHoverRect：长文字（近满窗宽）时矩形两侧仍留白，不退化成整窗', () => {
+  const container = r(0, 0, 240, 280)
+  const art = r(48, 19, 192, 224)
+  // 修法后的气泡上限 = round(240*0.72) = 173 → 文字盒约 33.5..206.5
+  const status = r(33.5, 231, 206.5, 272)
+  const rect = computeHoverRect({ art, status }, container, 1)
+  // 本体两侧外扩后是 36..204，文字盒 33.5..206.5 更宽 → 取文字盒的边，**且不再外扩**
+  assert.equal(rect.left, 33.5, '左边界取文字原盒左边缘（旧实现在此会再减 12）')
+  assert.equal(rect.right, 206.5, '右边界取文字原盒右边缘（旧实现在此会再加 12）')
+  assert.ok(rect.left - container.left >= 6 && container.right - rect.right >= 6, '两侧留白 ≥6px')
+  assert.equal(containsPoint(rect, 32, 260), false, '文字左侧 1.5px 已不命中（旧实现会命中）')
 })
 
 test('computeHoverRect：缺阴影/缺文字时只用现有项；全缺时退回容器', () => {

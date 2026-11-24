@@ -175,9 +175,11 @@ test('命中：闭区间边界（矩形左右上下边算命中，外面 0.1px �
   assert.ok(!pet.stage.classList.contains('is-hovering'))
 })
 
-test('矩形算法：union → 外扩 12×缩放 → 裁剪到容器', () => {
+test('矩形算法：本体/阴影外扩 12×缩放 → 并入文字原盒 → 裁剪到容器', () => {
   const { pet } = loadPet({ boxes: BOXES })
-  assert.deepEqual(pet.getHoverRect(), { left: 36, top: 5, right: 204, bottom: 280 })
+  // 本体/阴影并集 (48,17,192,241) 外扩 12 → (36,5,204,253)；文字原盒 (92,248,149,272) 并入
+  // → (36,5,204,272)。文字不加外扩，所以底边停在 272 而不是被裁到窗底 280。
+  assert.deepEqual(pet.getHoverRect(), { left: 36, top: 5, right: 204, bottom: 272 })
 })
 
 test('命中：设置面板上不淡化（即使落在矩形内）', () => {
@@ -467,8 +469,10 @@ const styleWidth = (pet) => Number(String(pet.statusEl.style.width || '').replac
 // 前提守卫：字宽必须大到让上限真正起来，否则「布局宽 vs 渲染宽」两种实现会算出同一个数，用例空转
 const assertCapBinds = () => {
   const textPx = [...LONG_TEXT].length * 7 + 4
-  assert.ok(textPx > 246, `前提：伪排版下文本宽 ${textPx} 必须超过两档上限之差（246），否则区分不出实现`)
+  assert.ok(textPx > 246, `前提：伪排版下文本宽 ${textPx} 必须超过上限，否则区分不出实现`)
 }
+// 气泡上限公式：max(96, round(cw × 0.72))；style.width = 上限 - 20(padding)
+const capStyleWidth = (cw) => Math.max(96, Math.round(cw * 0.72)) - 20
 
 test('气泡宽度上限用容器的**布局宽**（clientWidth），不受祖先 CSS transform 放大', () => {
   assertCapBinds()
@@ -477,16 +481,26 @@ test('气泡宽度上限用容器的**布局宽**（clientWidth），不受祖�
   container.clientWidth = 240
   container.clientHeight = 280
   pet.setStatusLine(LONG_TEXT)
-  // 240 - 10(border 上限) - 20(padding) = 210；误用渲染宽 276 会算出 276-10-20 = 246 → 渲染后 283 > 卡片 276
-  assert.equal(styleWidth(pet), 210, '上限必须按布局宽 240 算（210），而不是按渲染宽 276 算（246）')
-  assert.ok(styleWidth(pet) * 1.15 <= 276, '按布局宽算出的气泡在 scale(1.15) 下仍装得进 276 的卡片')
+  // 上限 = round(240×0.72) = 173 → style.width = 153；误用渲染宽 276 会算成 179（round(276*0.72)-20）
+  assert.equal(styleWidth(pet), capStyleWidth(240), '上限必须按布局宽 240 算（173），而不是按渲染宽 276 算（179）')
+  assert.equal(styleWidth(pet), 153, '上限 173 - 20 padding = 153')
+  assert.ok((styleWidth(pet) + 20) * 1.15 <= 276, '按布局宽算出的气泡在 scale(1.15) 下仍装得进 276 的卡片')
 })
 
 test('气泡宽度上限用容器宽（不是整页视口宽）', () => {
   assertCapBinds()
   const { pet } = loadPet({ boxes: { ...BOXES, container: rect(0, 0, 240, 280) } })
   pet.setStatusLine(LONG_TEXT)
-  assert.equal(styleWidth(pet), 210, '上限 = 240 - 10 - 20 = 210（整页视口 1200 宽会算出不受限的大气泡）')
+  assert.equal(styleWidth(pet), capStyleWidth(240), '上限 = round(240×0.72) - 20 = 153（整页视口宽会算出不受限的大气泡）')
+})
+
+test('气泡宽度上限公式：round(cw × 0.72)，下界 96（保证长文字时矩形两侧仍有留白）', () => {
+  assertCapBinds()
+  for (const [cw, expectBorder] of [[240, 173], [144, 104], [480, 346], [100, 96]]) {
+    const { pet } = loadPet({ boxes: { ...BOXES, container: rect(0, 0, cw, 280) } })
+    pet.setStatusLine(LONG_TEXT)
+    assert.equal(styleWidth(pet) + 20, expectBorder, `cw=${cw} → border 上限应为 ${expectBorder}`)
+  }
 })
 
 /* ---------------- 容器 resize 失效路径 ---------------- */
@@ -548,7 +562,7 @@ test('页面滚动 120px → 命中矩形跟着上移（不是停在旧位置）
   container.dispatch('pointermove', pointer(120, 114))
   assert.ok(pet.stage.classList.contains('is-hovering'), '前提：初始悬停中')
   const before = pet.getHoverRect()
-  assert.deepEqual(before, { left: 36, top: 5, right: 204, bottom: 280 }, '前提：初始矩形')
+  assert.deepEqual(before, { left: 36, top: 5, right: 204, bottom: 272 }, '前提：初始矩形')
 
   // 页面向下滚 120：所有客户端矩形同步上移 120，容器尺寸不变（RO 不会回调）
   scrollBy(120)
@@ -557,7 +571,7 @@ test('页面滚动 120px → 命中矩形跟着上移（不是停在旧位置）
 
   const after = pet.getHoverRect()
   assert.equal(after.top, before.top - 120, '滚动后矩形上沿必须跟着上移 120（停在旧位置就会错位）')
-  assert.deepEqual(after, { left: 36, top: -115, right: 204, bottom: 160 }, '整体上移 120，并按容器新位置裁剪')
+  assert.deepEqual(after, { left: 36, top: -115, right: 204, bottom: 152 }, '整体上移 120，并按容器新位置裁剪')
 
   // 上移后才进入矩形的区域（旧矩形外）必须命中；移出矩形的区域（旧矩形内）必须不命中
   container.dispatch('pointermove', pointer(120, -60))

@@ -11,6 +11,8 @@
  * 语义（命中区是**矩形**，不是绘制图形）：
  * 命中区 = union(本体, 地面阴影, 当前可见状态文字) 外扩 12×缩放，再裁剪到容器。
  * 因此「矩形内的空隙」「光晕环」「阴影」「文字」都算命中；只有矩形外与设置面板除外。
+ * 矩形的左右空白反例是**强制**校验（不再因文字较宽而跳过），并额外断言两侧留白 ≥6px：
+ * 文字不加外扩、气泡上限 = 72% 容器宽 —— 任何一处改回去都会让矩形贴近窗口边缘，这里必须失败。
  *
  * 判定方式是**端到端**的：对每个测试点，向容器派发一次合成 pointermove（带 clientX/clientY），
  * 然后读舞台是否带 `.is-hovering` —— 测的是线上真实逻辑（矩形 + 设置面板排除），
@@ -123,23 +125,34 @@
   const panel = document.querySelector('.pet-settings')
   if (panel) expect(center(panel.getBoundingClientRect()), false, '内嵌设置面板中心', panel)
 
-  // 4) 左右空白：只有在状态文字较窄、外扩后的矩形确实够不到这两个点时才是有效反例
-  const reach = content
-    ? { left: Math.max(c.left, content.left - pad) - c.left, right: Math.min(c.right, content.right + pad) - c.left }
+  // 4) 左右空白：**强制校验**（此前「文字较宽时跳过」掩盖了矩形退化成整窗的缺陷）。
+  //    期望矩形按现行口径复算：pad(本体 ∪ 阴影) ∪ 文字原盒（文字不加外扩）。
+  const body = box(artBox, shadowBox)
+  const expected = box(
+    body ? { left: body.left - pad, top: body.top - pad, right: body.right + pad, bottom: body.bottom + pad } : null,
+    statusBox
+  )
+  const reach = expected
+    ? { left: Math.max(c.left, expected.left) - c.left, right: Math.min(c.right, expected.right) - c.left }
     : null
-  const leftBlankOk = !reach || 20 * scale < reach.left - 1
-  const rightBlankOk = !reach || 225 * scale > reach.right + 1
-  if (leftBlankOk) expect(asContainer(20, 140), false, '(容器 20,140) 左侧空白')
-  else pass++ // 文字很宽时矩形本身伸到这里，跳过硬断言（标签见下方说明）
-  if (rightBlankOk) expect(asContainer(225, 140), false, '(容器 225,140) 右侧空白')
-  else pass++
-  const skips = []
-  if (!leftBlankOk) skips.push('左侧空白(20,140)')
-  if (!rightBlankOk) skips.push('右侧空白(225,140)')
+  if (reach) {
+    if (20 * scale < reach.left - 1) expect(asContainer(20, 140), false, '(容器 20,140) 左侧空白')
+    else failures.push(`(容器 20,140) 左侧空白：期望矩形已伸到 x=${reach.left.toFixed(1)}，反例失效（矩形退化成整窗？）`)
+    if (225 * scale > reach.right + 1) expect(asContainer(225, 140), false, '(容器 225,140) 右侧空白')
+    else failures.push(`(容器 225,140) 右侧空白：期望矩形已伸到 x=${reach.right.toFixed(1)}，反例失效（矩形退化成整窗？）`)
+  }
 
-  const total = pass + failures.length
+  // 5) 硬断言：状态文字可见时，命中矩形两侧与容器的间距都必须 ≥ 6px
+  //    （防止「气泡太宽 + 文字外扩」再次把矩形打满窗口；0.6 档因文字贴窗底只查左右）
+  if (statusBox) {
+    const gapL = (expected ? expected.left : c.left) - c.left
+    const gapR = c.right - (expected ? expected.right : c.right)
+    const label = `矩形侧向留白 ≥6px（左 ${gapL.toFixed(1)} / 右 ${gapR.toFixed(1)}）`
+    if (gapL >= 6 && gapR >= 6) pass++
+    else failures.push(`${label} 期望左右都 ≥6px —— 留白不足说明气泡上限或文字外扩又改回去了`)
+  }
+
   const head = `HOVER-PROBE scale=${scale} pass=${pass} fail=${failures.length}`
-  const skipNote = skips.length ? `\n  (跳过 ${skips.join('、')}：当前状态文字较宽，矩形外扩后已覆盖该处)` : ''
-  if (!failures.length) return head + skipNote
-  return `${head}${skipNote}\n${failures.join('\n')}`
+  if (!failures.length) return head
+  return `${head}\n${failures.join('\n')}`
 })()

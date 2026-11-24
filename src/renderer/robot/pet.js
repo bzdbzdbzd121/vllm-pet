@@ -147,15 +147,20 @@ export class PetView {
    * 气泡宽度贴合文本：用隐藏 span 按真实排版实测字宽（视觉 px）。
    * 注意：气泡在 scale(s) 的舞台内、自身反向 scale(1/s)，净变换 = 1，
    * 因此样式宽度直接等于视觉宽度（content-box，border = 宽 + 20px padding）。
-   * 上限按**容器**宽度算（桌面是窗口，预览页是卡片）：缩放 < 1 时舞台会被压窄，
-   * 用舞台宽会提前掉行；也避免预览页用整页宽算出过大气泡。
+   * 上限按**容器**宽度的 72% 算（桌面是窗口，预览页是卡片）：
+   * - 不用舞台宽：缩放 < 1 时舞台会被压窄，会提前掉行；
+   * - 不用整页宽：预览页会把气泡撑出卡片；
+   * - 不用「容器宽 − 10」：那会让长状态文字的气泡几乎占满窗口，命中矩形随之退化成整窗
+   *   （本轮缺陷：从文字上移开也不恢复），两侧必须留出可退出的空白。
    */
   _fitStatusWidth() {
     const doc = this.stage.ownerDocument
     // 用布局宽度（clientWidth）而非 getBoundingClientRect().width：后者含祖先 CSS transform
     //（预览页 #pet-holder 是 scale(1.15)），拿它跟未缩放的字宽比较会让气泡按 1.15 倍溢出卡片。
     const cw = this._containerSize().w || 240
-    const maxBorder = Math.max(120, cw - 10)
+    // 上限 = 72% 容器宽（下界 96）：留出两侧空白，命中矩形才不会退化成整窗
+    //（旧值 cw-10 在 1 档允许 230px 气泡，加上文字外扩后矩形直接打满窗口）
+    const maxBorder = Math.max(96, Math.round(cw * 0.72))
     const text = this.statusEl.textContent
     let content = 16
     if (text && doc) {

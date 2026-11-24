@@ -116,8 +116,12 @@ tests/*.test.mjs            node --test，89 个用例
    所以 running/waiting/KV 以 `/v1/loads`（请求时现算）为准，`/metrics` 只提供 counter 与吞吐。
    新增后端时先分清：这个数字是"请求时现算"还是"最后一次推送"？后者不能用来判断"现在忙不忙"。
 9. **悬停命中是「矩形 + 指针事件锁存」，不要交回 CSS 伪类**：
-   「鼠标悬停在宠物上变透明」的命中区 = `union(本体, 地面阴影, 当前可见状态文字)` 外扩
-   `12×缩放` 像素，再裁剪到宠物容器（`src/shared/hover-region.js` 纯函数；`pet.js#getHoverRect()`）。
+   「鼠标悬停在宠物上变透明」的命中区 =
+   `clamp( union( pad(本体 ∪ 地面阴影, 12×缩放), 当前可见状态文字原盒 ), 宠物容器 )`
+   （`src/shared/hover-region.js#computeHoverRect`；`pet.js#getHoverRect()`）。
+   **状态文字不参与外扩**：给文字加 12px 外扩会把窗口底部留白吃掉（1 档文字底 272 + 12 > 280 → 裁到窗底），
+   矩形贴满窗口后「从文字上移开」就再也恢复不了（用户实测缺陷）。气泡宽度上限同时收紧到容器宽的 72%，
+   保证两侧始终有可退出的空白（1 档 ≈33px）。
    判定只在指针事件里发生（事件挂**容器**：桌面 `#app`、预览 `#pet-holder`），结果写成舞台的
    `.is-hovering` class；CSS 只负责
    `.pet-stage.hover-fade-enabled.is-hovering .pet-scale/.pet-shadow/.pet-status-wrap { opacity: var(--hover-opacity) }`
@@ -143,6 +147,9 @@ tests/*.test.mjs            node --test，89 个用例
    - 命中相关的回归用 `node scripts/probe-hover.mjs`（矩形语义、合成指针事件端到端）与「指针不动采样
      opacity」（状态机：指针只移动一次后不再发事件，150ms 采样 `getComputedStyle('.pet-scale').opacity`
      3.3s，`|Δ|>0.05` 的次数必须为 0）。
+   - **0.6 档为什么要用容器而不是舞台作事件边界**（实测）：舞台被 flex 压到 86px 宽，而气泡上限
+     `round(容器宽 × 0.72)` = 104px → 文字左右各溢出舞台约 9px；矩形先并文字原盒再裁剪到容器，
+     所以文字边缘仍可触发。探针里本体点用 `getScreenCTM()` 换算正是因为这段压缩+留边。
 
 10. **穿透下的悬停：平台分级 + 存活证明，不要「所有平台统一轮询」**：
    窗口一旦 `setIgnoreMouseEvents(true)`，很多平台就收不到鼠标事件；更麻烦的是「主进程读到的光标位置」

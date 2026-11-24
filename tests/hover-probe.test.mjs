@@ -62,13 +62,16 @@ function makeEnv({ scale = 1, statusShown = true, panel = null, app = {} } = {})
     let rect
     if (app.useStageRect) rect = { ...containerRect }
     else {
-      const content = union(art, shadow, classSet.has('show-status') ? status : null)
+      // 现行口径：本体/阴影外扩 pad，状态文字用原盒（不加外扩）
+      const body = union(art, shadow)
+      const paddedBody = body ? { left: body.left - pad, top: body.top - pad, right: body.right + pad, bottom: body.bottom + pad } : null
+      const content = union(paddedBody, classSet.has('show-status') ? status : null)
       rect = content
         ? {
-            left: Math.max(containerRect.left, content.left - pad),
-            top: Math.max(containerRect.top, content.top - pad),
-            right: Math.min(containerRect.right, content.right + pad),
-            bottom: Math.min(containerRect.bottom, content.bottom + pad)
+            left: Math.max(containerRect.left, content.left),
+            top: Math.max(containerRect.top, content.top),
+            right: Math.min(containerRect.right, content.right),
+            bottom: Math.min(containerRect.bottom, content.bottom)
           }
         : { ...containerRect }
     }
@@ -154,17 +157,19 @@ test('探针：状态文字隐藏时不再断言文字行命中（该场景由�
   assert.match(out, /fail=0/, out)
 })
 
-test('探针：状态文字很宽导致矩形覆盖左右空白时，跳过这两个反例而不是误报失败', () => {
+test('探针：状态文字把矩形撑到覆盖左右空白时必须报 fail（不再跳过 —— 这正是上一轮的漏网条件）', () => {
   const env = makeEnv({})
-  // 把状态框撑到接近整窗：矩形外扩后覆盖 (20,140) / (225,140)
+  // 把状态框撑到接近整窗（旧上限 cw-10 的效果）：矩形覆盖 (20,140) / (225,140)
   const wide = env.stage.querySelector
   env.stage.querySelector = (sel) => {
     if (sel !== '.pet-status') return wide(sel)
-    return { textContent: '推理中 ×3 · KV cache 87% · 12.3 tok/s · qwen2.5-72b-instruct', getBoundingClientRect: () => withSize({ left: 45, top: 278, right: 275, bottom: 300 }) }
+    return { textContent: '推理中 ×3 · KV cache 87% · 12.3 tok/s · qwen2.5-72b-instruct', getBoundingClientRect: () => withSize({ left: 5, top: 231, right: 235, bottom: 272 }) }
   }
   const out = vm.runInNewContext(PROBE, env.sandbox)
-  assert.match(out, /fail=0/, `宽文字不应误报：${out}`)
-  assert.match(out, /跳过/, '应显式说明跳过了哪些反例')
+  assert.doesNotMatch(out, /fail=0/, `宽文字必须失败：${out}`)
+  assert.match(out, /左侧空白/, `必须报左侧空白反例失效：${out}`)
+  assert.match(out, /侧向留白 ≥6px/, `必须报侧向留白不足：${out}`)
+  assert.doesNotMatch(out, /跳过/, '不得再有「跳过」这条出口')
 })
 
 test('探针：输出契约不变（供 probe-hover.mjs 与冒烟分支解析）', () => {
