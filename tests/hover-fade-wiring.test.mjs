@@ -397,6 +397,7 @@ test('穿透会话的 pointerleave：确认失败/抛错 → 复位（fail-close
   await new Promise((r) => setTimeout(r, 0))
   assert.ok(!pet.stage.classList.contains('is-hovering'), '确认失败也必须复位')
 
+  await new Promise((r) => setTimeout(r, 130)) // 越过 100ms 合并窗，让第二次 leave 真的发起确认
   container.dispatch('pointermove', pointer(120, 114))
   pet.onVerifyLeave = () => { throw new Error('boom') }
   container.dispatch('pointercancel', {})
@@ -412,6 +413,66 @@ test('非穿透会话：pointerleave 直接复位，不调用确认通道（保�
   container.dispatch('pointerleave', {})
   assert.equal(asked, 0, '指针模式不需要确认（窗口可命中，leave 可信）')
   assert.ok(!pet.stage.classList.contains('is-hovering'), '必须同步复位')
+})
+
+test('竞态：迟到的「窗外」确认不得清掉期间由有效 move 新建的悬停', async () => {
+  // 序列：pointerleave（发起确认）→ 有效 pointermove（重新确认悬停）→ 确认迟到并返回 null
+  // 若只在「发起/会话切换」时递增代次，这一步会把刚建立的悬停清掉（审查用 harness 复现过）。
+  const { pet, container } = loadPet({ boxes: BOXES })
+  container.dispatch('pointermove', pointer(120, 114))
+  pet.setClickThroughHover(true)
+  let release
+  pet.onVerifyLeave = () => new Promise((r) => { release = r })
+  container.dispatch('pointerleave', {})          // 确认在飞
+  container.dispatch('pointermove', pointer(120, 114)) // 期间又真的悬停了（状态不翻转，也必须续期）
+  assert.ok(pet.stage.classList.contains('is-hovering'), '前提：move 之后是悬停态')
+  release({ clickThrough: true, cursor: null })   // 迟到的「窗外」
+  await new Promise((r) => setTimeout(r, 0))
+  assert.ok(pet.stage.classList.contains('is-hovering'), '迟到的「窗外」必须作废（不得清掉新建的悬停）')
+})
+
+test('反向：没有新的有效 move 时，代次相同的「窗外」确认仍必须复位', async () => {
+  const { pet, container } = loadPet({ boxes: BOXES })
+  container.dispatch('pointermove', pointer(120, 114))
+  pet.setClickThroughHover(true)
+  let release
+  pet.onVerifyLeave = () => new Promise((r) => { release = r })
+  container.dispatch('pointerleave', {})
+  release({ clickThrough: true, cursor: null })
+  await new Promise((r) => setTimeout(r, 0))
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '没有新 move → 确认有效 → 必须复位')
+})
+
+test('离开确认 100ms 合并：leave 风暴只发起一次确认（IPC 不放大），越窗后重新发起', async () => {
+  const { pet, container } = loadPet({ boxes: BOXES })
+  container.dispatch('pointermove', pointer(120, 114))
+  pet.setClickThroughHover(true)
+  let calls = 0
+  pet.onVerifyLeave = () => { calls += 1; return Promise.resolve({ clickThrough: true, cursor: { nx: 0.5, ny: 0.4 } }) }
+  // 模拟 Windows 的 leave 风暴：3 次 leave 落在同一个 100ms 窗里
+  container.dispatch('pointerleave', {})
+  container.dispatch('pointerleave', {})
+  container.dispatch('pointercancel', {})
+  assert.equal(calls, 1, `同一合并窗内只允许一次确认，实际 ${calls} 次`)
+  // 窗口过去后，再来的 leave 必须重新确认（不能永久短路）
+  await new Promise((r) => setTimeout(r, 130))
+  container.dispatch('pointerleave', {})
+  assert.equal(calls, 2, `越过合并窗后必须重新确认，实际 ${calls} 次`)
+  assert.ok(pet.stage.classList.contains('is-hovering'), '确认内容为「仍在窗口内」→ 保持淡化')
+})
+
+test('离开确认 100ms 合并：窗内收到有效 move → 不发起确认也不清状态', async () => {
+  const { pet, container } = loadPet({ boxes: BOXES })
+  container.dispatch('pointermove', pointer(120, 114))
+  pet.setClickThroughHover(true)
+  let calls = 0
+  pet.onVerifyLeave = () => { calls += 1; return Promise.resolve({ clickThrough: true, cursor: null }) }
+  container.dispatch('pointerleave', {})     // 第 1 次：真的发起
+  container.dispatch('pointermove', pointer(120, 114)) // 期间 move：确认结果作废
+  container.dispatch('pointerleave', {})     // 第 2 次：被合并窗短路
+  await new Promise((r) => setTimeout(r, 0))
+  assert.equal(calls, 1, '合并窗内第二次 leave 不得再发起确认')
+  assert.ok(pet.stage.classList.contains('is-hovering'), 'move 之后的悬停不得被清掉')
 })
 
 test('离开确认期间会话结束 → 复位（结果不跨会话复用）', async () => {

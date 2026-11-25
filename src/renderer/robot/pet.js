@@ -10,6 +10,12 @@ import { computeHoverRect, containsPoint } from '../../shared/hover-region.js'
 
 const VISUAL_STATES = ['idle', 'sleeping', 'connecting', 'busy-1', 'busy-2', 'busy-3', 'offline']
 const CELEBRATE_MS = 950
+/**
+ * 穿透会话里「离开确认」的合并窗（ms）：Windows 在忽略鼠标事件的窗口上会「一停就补发 leave」
+ * （leave 风暴），逐条发起确认会把 IPC 与主进程采样放大成每秒几十次。同一窗内的多个 leave
+ * 合并成一次确认；窗内若收到有效 move，pending 的结果直接作废（见 _setHovering 的代次递增）。
+ */
+const LEAVE_VERIFY_COALESCE_MS = 100
 
 /**
  * 把地面阴影（.r-shadow）从皮肤 SVG 中剥离成独立 SVG：
@@ -58,6 +64,7 @@ export class PetView {
     this.onDebug = null // 由入口注入：诊断日志通道（VLLM_PET_DEBUG_HOVER=1 才有）
     this._debugHover = false
     this._leaveSeq = 0
+    this._leaveVerify = null // { at, count }：合并窗内最近一次离开确认（≤100ms 短路）
 
     this.stage = document.createElement('div')
     this.stage.className = 'pet-stage st-idle'
@@ -362,6 +369,7 @@ export class PetView {
     if (next === this._clickThroughHover) return
     this._clickThroughHover = next
     this._leaveSeq += 1 // 会话切换后，旧的「离开确认」结果作废
+    this._leaveVerify = null
     this._dbg(`mode: clickThroughHover=${next}`)
     if (next) {
       this._systemEventReported = false // 新会话：事件源可以再上报一次存活证明
@@ -426,6 +434,9 @@ export class PetView {
   /** 锁存悬停状态：只在指针事件里调用；状态未变时不重复写 DOM */
   _setHovering(over, why = '') {
     const next = !!over
+    // 有效指针 move 确认「现在就悬停」→ 让任何在飞的离开确认结果作废（否则迟到的「窗外」会清掉刚建立的悬停）。
+    // 放在状态不变也会执行的早退之前：move→leave→move→迟到 null 这种序列里，第二次 move 不做状态翻转也必须续期。
+    if (next && why === 'pointer') this._leaveSeq += 1
     if (next === this._hovering) return
     this._hovering = next
     this.stage.classList.toggle('is-hovering', next)
@@ -475,6 +486,14 @@ export class PetView {
 
   /** 穿透会话的离开确认：主进程单次采样，报告「不在窗口内/未知」才复位 */
   _verifyLeave(kind) {
+    // 100ms 合并：leave 风暴（Windows 停顿即补发）只发起一次确认，避免放大 IPC 与采样次数。
+    // 合并掉的那几次不会漏清状态：正在飞的那次确认若判到窗外照样会清。
+    const nowMs = Date.now()
+    if (this._leaveVerify && nowMs - this._leaveVerify.at < LEAVE_VERIFY_COALESCE_MS) {
+      this._leaveVerify.count += 1
+      this._dbg(`leave-verify(${kind}) 合并（${nowMs - this._leaveVerify.at}ms 内第 ${this._leaveVerify.count} 次）`)
+      return
+    }
     const seq = ++this._leaveSeq
     const clear = (why) => {
       if (seq !== this._leaveSeq) return // 期间会话/确认已更新，旧结果作废
@@ -491,6 +510,7 @@ export class PetView {
       clear(`${kind}-unverifiable`)
       return
     }
+    this._leaveVerify = { at: nowMs, count: 1 }
     this._dbg(`leave-verify(${kind}) → 询问主进程`)
     pending.then(
       (state) => {
