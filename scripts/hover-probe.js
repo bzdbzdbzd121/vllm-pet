@@ -3,8 +3,9 @@
  *
  * 用法：主进程在冒烟模式下把本文件文本交给 webContents.executeJavaScript()，
  * 最后一条表达式就是 IIFE 的返回值 —— 一行结果字符串：
- *   HOVER-PROBE scale=1 pass=15 fail=0
- *   HOVER-PROBE scale=2 pass=15 fail=0      ← 三档一致，通过时一律 pass=15
+ *   HOVER-PROBE scale=1 pass=22 fail=0
+ *   HOVER-PROBE scale=2 pass=18 fail=0      ← 2 档气泡窄于本体外扩盒，文字不是左右决定边，少 4 点
+ *   （0.6 档同 1 档 = 22：文字贴窗底时纵向可停区改测「窗口最后一行必须命中」，不跳过任何一项）
  *   失败时逐条列出，例如：(20,140) 左侧空白：期望矩形已伸到 x=0.0，反例失效（矩形退化成整窗？）
  * 输出格式保持不变（`scripts/probe-hover.mjs` 与 main.js 的冒烟分支不用改）。
  *
@@ -14,6 +15,11 @@
  * 因此「矩形内的空隙」「光晕环」「阴影」「文字」都算命中；只有矩形外与设置面板除外。
  * 矩形的左右空白反例是**强制**校验（不再因文字较宽而跳过），并额外断言两侧留白 ≥6px：
  * 文字不加外扩、气泡上限 = 72% 容器宽 —— 任何一处改回去都会让矩形贴近窗口边缘，这里必须失败。
+ *
+ * 两个方向分别有专门的「回归钉子」：
+ * - 纵向：状态文字下方 4×缩放的采样点必须命中 —— 去掉文字纵向 pad（v0.3.1 的回归）直接变红；
+ * - 横向：文字左右缘「内 1px 命中 / 外 4px 不命中」—— 给文字横向加 pad 会让「外 4px」误命中。
+ * 另外把探针自己的期望矩形边界（横 / 下）与「应然公式」逐项对齐，期望值被改松也会变红。
  *
  * 判定方式是**端到端**的：对每个测试点，向容器派发一次合成 pointermove（带 clientX/clientY），
  * 然后读舞台是否带 `.is-hovering` —— 测的是线上真实逻辑（矩形 + 设置面板排除），
@@ -79,6 +85,7 @@
       ? { clientX: ctm.a * x + ctm.c * y + ctm.e, clientY: ctm.b * x + ctm.d * y + ctm.f }
       : { clientX: c.left + x * scale, clientY: c.top + y * scale }
   const asContainer = (x, y) => ({ clientX: c.left + x * scale, clientY: c.top + y * scale })
+  const atClient = (clientX, clientY) => ({ clientX, clientY })
   const center = (box) => ({ clientX: (box.left + box.right) / 2, clientY: (box.top + box.bottom) / 2 })
 
   const fireAt = (pt, target = container) => {
@@ -134,9 +141,14 @@
     // 状态文字：只纵向扩 pad（横向不外扩，否则长文字会把矩形撑成整窗）
     statusBox ? { left: statusBox.left, top: statusBox.top - pad, right: statusBox.right, bottom: statusBox.bottom + pad } : null
   )
-  const reach = expected
-    ? { left: Math.max(c.left, expected.left) - c.left, right: Math.min(c.right, expected.right) - c.left }
+  // 期望矩形裁到容器（与线上口径一致），后文的边界钉子直接拿它比
+  const clamped = expected
+    ? {
+        left: Math.max(c.left, expected.left), top: Math.max(c.top, expected.top),
+        right: Math.min(c.right, expected.right), bottom: Math.min(c.bottom, expected.bottom)
+      }
     : null
+  const reach = clamped ? { left: clamped.left - c.left, right: clamped.right - c.left } : null
   if (reach) {
     if (20 * scale < reach.left - 1) expect(asContainer(20, 140), false, '(容器 20,140) 左侧空白')
     else failures.push(`(容器 20,140) 左侧空白：期望矩形已伸到 x=${reach.left.toFixed(1)}，反例失效（矩形退化成整窗？）`)
@@ -147,11 +159,50 @@
   // 5) 硬断言：状态文字可见时，命中矩形两侧与容器的间距都必须 ≥ 6px
   //    （防止「气泡太宽 + 文字外扩」再次把矩形打满窗口；0.6 档因文字贴窗底只查左右）
   if (statusBox) {
-    const gapL = (expected ? expected.left : c.left) - c.left
-    const gapR = c.right - (expected ? expected.right : c.right)
+    const gapL = (clamped ? clamped.left : c.left) - c.left
+    const gapR = c.right - (clamped ? clamped.right : c.right)
     const label = `矩形侧向留白 ≥6px（左 ${gapL.toFixed(1)} / 右 ${gapR.toFixed(1)}）`
     if (gapL >= 6 && gapR >= 6) pass++
     else failures.push(`${label} 期望左右都 ≥6px —— 留白不足说明气泡上限或文字外扩又改回去了`)
+  }
+
+  // 6) 横向不回退：状态文字是决定边时，左右缘「内 1px 命中 / 外 4px 不命中」。
+  //    文字横向**不参与外扩**，一旦给它加 12×缩放，「文字左/右缘外 4px」就会变成命中 → 这里必须失败。
+  //    同时把探针自己的期望矩形横向边界钉死（防止把 expected 也改成横向加 pad 来"放过"回归）。
+  if (statusBox) {
+    const midY = (statusBox.top + statusBox.bottom) / 2
+    const bodyL = body ? body.left - pad : null
+    const bodyR = body ? body.right + pad : null
+    if ((bodyL === null || statusBox.left <= bodyL + 0.5) && statusBox.left - 4 >= c.left) {
+      expect(atClient(statusBox.left + 1, midY), true, '状态文字左缘内 1px（文字盒内必命中）')
+      expect(atClient(statusBox.left - 4, midY), false, '状态文字左缘外 4px（横向加 pad 会误命中）')
+    }
+    if ((bodyR === null || statusBox.right >= bodyR - 0.5) && statusBox.right + 4 <= c.right) {
+      expect(atClient(statusBox.right - 1, midY), true, '状态文字右缘内 1px（文字盒内必命中）')
+      expect(atClient(statusBox.right + 4, midY), false, '状态文字右缘外 4px（横向加 pad 会误命中）')
+    }
+    if (bodyL !== null && bodyR !== null && clamped) {
+      const wantL = Math.max(c.left, Math.min(statusBox.left, bodyL))
+      const wantR = Math.min(c.right, Math.max(statusBox.right, bodyR))
+      if (Math.abs(clamped.left - wantL) <= 0.5 && Math.abs(clamped.right - wantR) <= 0.5) pass++
+      else failures.push(`期望矩形横向边界 ${clamped.left.toFixed(1)}..${clamped.right.toFixed(1)} ≠ 文字盒∪本体外扩盒 ${wantL.toFixed(1)}..${wantR.toFixed(1)}（横向不该给文字加 pad）`)
+    }
+  }
+
+  // 7) 纵向可停区：状态文字下方 4×缩放 必须命中 —— 去掉纵向 pad（回到 v0.3.1）会让它掉出矩形 → 红。
+  //    0.6 档文字盒底已越过窗口底（既有边界，不在本次范围），没有可停区，改断言「窗口最后一行必须命中」。
+  //    同时把期望矩形下边界钉死。
+  if (statusBox) {
+    const belowX = (statusBox.left + statusBox.right) / 2
+    const pad4 = 4 * scale
+    if (statusBox.bottom + pad4 <= c.bottom - 0.5) {
+      expect(atClient(belowX, statusBox.bottom + pad4), true, `状态文字下方 ${pad4.toFixed(1)}px（纵向可停区）`)
+    } else {
+      expect(atClient(belowX, c.bottom - 1), true, '窗口最后一行（文字已贴窗底，纵向可停区无处可测）')
+    }
+    const wantBottom = Math.min(c.bottom, Math.max(body ? body.bottom + pad : c.bottom, statusBox.bottom + pad))
+    if (clamped && Math.abs(clamped.bottom - wantBottom) <= 0.5) pass++
+    else if (clamped) failures.push(`期望矩形下边界 ${clamped.bottom.toFixed(1)} 应为 ${wantBottom.toFixed(1)}（文字纵向要留 12×缩放）`)
   }
 
   const head = `HOVER-PROBE scale=${scale} pass=${pass} fail=${failures.length}`

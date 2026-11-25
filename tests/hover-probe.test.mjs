@@ -20,13 +20,14 @@ function withSize(r) {
   return { ...r, width: r.right - r.left, height: r.bottom - r.top }
 }
 
-function makeEnv({ scale = 1, statusShown = true, panel = null, app = {} } = {}) {
+function makeEnv({ scale = 1, statusShown = true, panel = null, app = {}, statusBox: sb = null } = {}) {
   const containerRect = withSize({ left: 40, top: 30, right: 40 + 240 * scale, bottom: 30 + 280 * scale })
   const s = (v) => v * scale
   const box = (l, t, r, b) => withSize({ left: containerRect.left + s(l), top: containerRect.top + s(t), right: containerRect.left + s(r), bottom: containerRect.top + s(b) })
   const art = box(48, 17, 192, 225)
   const shadow = box(76, 223, 164, 241)
-  const status = box(92, 248, 149, 272)
+  // 默认窄文字（本体外扩盒更宽）；传 statusBox 可换成「文字更宽」的真实长文字几何
+  const status = sb ? box(sb[0], sb[1], sb[2], sb[3]) : box(92, 248, 149, 272)
   const pad = (app.noPad ? 0 : 12 * scale)
 
   const classSet = new Set(statusShown ? ['pet-stage', 'show-status', 'hover-fade-enabled'] : ['pet-stage', 'hover-fade-enabled'])
@@ -62,10 +63,18 @@ function makeEnv({ scale = 1, statusShown = true, panel = null, app = {} } = {})
     let rect
     if (app.useStageRect) rect = { ...containerRect }
     else {
-      // 现行口径：本体/阴影外扩 pad，状态文字用原盒（不加外扩）
+      // 现行口径：本体/阴影四周外扩 pad；状态文字**只纵向**外扩 pad（横向不外扩）
       const body = union(art, shadow)
       const paddedBody = body ? { left: body.left - pad, top: body.top - pad, right: body.right + pad, bottom: body.bottom + pad } : null
-      const content = union(paddedBody, classSet.has('show-status') ? status : null)
+      const shown = classSet.has('show-status') && !app.hideStatusForApp
+      const paddedStatus = shown
+        ? app.noStatusPadY
+          ? { ...status }
+          : app.padStatusX
+            ? { left: status.left - pad, top: status.top - pad, right: status.right + pad, bottom: status.bottom + pad }
+            : { left: status.left, top: status.top - pad, right: status.right, bottom: status.bottom + pad }
+        : null
+      const content = union(paddedBody, paddedStatus)
       rect = content
         ? {
             left: Math.max(containerRect.left, content.left),
@@ -170,6 +179,44 @@ test('探针：状态文字把矩形撑到覆盖左右空白时必须报 fail（
   assert.match(out, /左侧空白/, `必须报左侧空白反例失效：${out}`)
   assert.match(out, /侧向留白 ≥6px/, `必须报侧向留白不足：${out}`)
   assert.doesNotMatch(out, /跳过/, '不得再有「跳过」这条出口')
+})
+
+test('探针：纵向可停区钉子 —— 去掉状态文字纵向 pad（v0.3.1 回归）必须变红', () => {
+  const okRun = runProbe({})
+  assert.match(okRun.out, /fail=0/, okRun.out)
+  const mutated = runProbe({ app: { noStatusPadY: true } })
+  assert.match(mutated.out, /fail=[1-9]/, mutated.out)
+  assert.match(mutated.out, /状态文字下方 \d+(\.\d+)?px（纵向可停区） 期望命中=true 实际=false/, mutated.out)
+})
+
+test('探针：横向钉子 —— 给状态文字横向加 pad（v0.3.0 回归）必须变红', () => {
+  // 长文字几何（33.5..206.5，与线上长文字一致）：此时文字盒才是矩形的左右决定边，
+  // 才能测「文字缘外 4px」。窄文字下本体外扩盒更宽，横向 pad 变化本就不可见。
+  const longText = [33.5, 231, 206.5, 272]
+  const narrow = parseProbeReport(vm.runInNewContext(PROBE, makeEnv({}).sandbox))
+  const ok = parseProbeReport(vm.runInNewContext(PROBE, makeEnv({ statusBox: longText }).sandbox))
+  assert.equal(ok.fail, 0, JSON.stringify(ok))
+  // 长文字时文字是左右决定边 → 会多跑「内 1px 命中 / 外 4px 不命中」两对（+4 点）
+  assert.equal(ok.pass, narrow.pass + 4, `长文字应比窄文字多 4 个横向缘点：${narrow.pass} → ${ok.pass}`)
+  const mutated = vm.runInNewContext(PROBE, makeEnv({ statusBox: longText, app: { padStatusX: true } }).sandbox)
+  assert.match(mutated, /fail=[1-9]/, mutated)
+  assert.match(mutated, /状态文字左缘外 4px（横向加 pad 会误命中） 期望命中=false 实际=true/, mutated)
+})
+
+test('探针：期望矩形本身被改松也要变红（期望值不是自证）', () => {
+  const longText = [33.5, 231, 206.5, 272]
+  // 横向：把探针里的期望矩形给文字横向加 pad
+  const xMut = PROBE.replace('statusBox ? { left: statusBox.left, top: statusBox.top - pad', 'statusBox ? { left: statusBox.left - pad, top: statusBox.top - pad')
+  assert.notEqual(xMut, PROBE, '横向变异补丁必须生效')
+  const xOut = vm.runInNewContext(xMut, makeEnv({ statusBox: longText }).sandbox)
+  assert.match(xOut, /fail=[1-9]/, xOut)
+  assert.match(xOut, /期望矩形横向边界/, xOut)
+  // 纵向：把探针里的期望矩形去掉文字纵向 pad
+  const yMut = PROBE.replace('top: statusBox.top - pad, right: statusBox.right, bottom: statusBox.bottom + pad', 'top: statusBox.top, right: statusBox.right, bottom: statusBox.bottom')
+  assert.notEqual(yMut, PROBE, '纵向变异补丁必须生效')
+  const yOut = vm.runInNewContext(yMut, makeEnv({ statusBox: longText }).sandbox)
+  assert.match(yOut, /fail=[1-9]/, yOut)
+  assert.match(yOut, /期望矩形下边界/, yOut)
 })
 
 test('探针：输出契约不变（供 probe-hover.mjs 与冒烟分支解析）', () => {
