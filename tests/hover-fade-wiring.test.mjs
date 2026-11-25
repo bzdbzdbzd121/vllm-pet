@@ -346,9 +346,9 @@ test('穿透会话：blur / 页面隐藏不再误清（普通模式保持 v0.2.0
   doc.dispatch('visibilitychange')
   assert.ok(pet.stage.classList.contains('is-hovering'), '穿透会话内页面隐藏不清（由主进程推 null 负责）')
 
-  // pointerleave 仍然复位（转发来的 leave 是可信的「离开」信号）
+  // pointerleave 仍然会问一次主进程再决定（没接线时默认按离开处理，fail-closed）
   container.dispatch('pointerleave', {})
-  assert.ok(!pet.stage.classList.contains('is-hovering'), 'pointerleave 在穿透会话内仍要复位')
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '未接确认通道时 pointerleave 仍复位（fail-closed）')
 
   // 退出会话 → 失焦复位恢复
   container.dispatch('pointermove', pointer(120, 114))
@@ -359,6 +359,99 @@ test('穿透会话：blur / 页面隐藏不再误清（普通模式保持 v0.2.0
   container.dispatch('win:blur', {})
   assert.ok(!pet.stage.classList.contains('is-hovering'), '回到指针模式后 blur 复位照旧')
   assert.equal(pet.isClickThroughHover(), false)
+})
+
+test('穿透会话的 pointerleave 必须经主进程确认：确认仍在窗口内 → 保持淡化（v0.3.2 Windows 缺陷）', async () => {
+  // 用户症状：只有开穿透时，手停在宠物上「淡一下就恢复」。窗口 setIgnoreMouseEvents(true,{forward:true})
+  // 时命中测试不认这扇窗，Windows 上可能手一停就补发一个 pointerleave —— 直接采信就会清掉锁存。
+  const { pet, container } = loadPet({ boxes: BOXES })
+  const asks = []
+  container.dispatch('pointermove', pointer(120, 114))
+  pet.setClickThroughHover(true)
+  assert.ok(pet.stage.classList.contains('is-hovering'), '前提：穿透会话内已淡化')
+
+  pet.onVerifyLeave = () => { asks.push(1); return Promise.resolve({ clickThrough: true, cursor: { nx: 0.5, ny: 0.4 } }) }
+  container.dispatch('pointerleave', {})
+  assert.equal(asks.length, 1, '穿透会话里必须问主进程')
+  assert.ok(pet.stage.classList.contains('is-hovering'), 'confirmed: 主进程说光标仍在窗口内 → 不得清状态')
+  await new Promise((r) => setTimeout(r, 0))
+  assert.ok(pet.stage.classList.contains('is-hovering'), '微任务结束后仍然保持淡化')
+})
+
+test('穿透会话的 pointerleave：主进程确认「不在窗口内」→ 复位（明确的离开）', async () => {
+  const { pet, container } = loadPet({ boxes: BOXES })
+  container.dispatch('pointermove', pointer(120, 114))
+  pet.setClickThroughHover(true)
+  pet.onVerifyLeave = () => Promise.resolve({ clickThrough: true, cursor: null })
+  container.dispatch('pointerleave', {})
+  await new Promise((r) => setTimeout(r, 0))
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '主进程报 null（窗口外/未知）→ 必须复位')
+})
+
+test('穿透会话的 pointerleave：确认失败/抛错 → 复位（fail-closed）', async () => {
+  const { pet, container } = loadPet({ boxes: BOXES })
+  container.dispatch('pointermove', pointer(120, 114))
+  pet.setClickThroughHover(true)
+  pet.onVerifyLeave = () => Promise.reject(new Error('ipc down'))
+  container.dispatch('pointerleave', {})
+  await new Promise((r) => setTimeout(r, 0))
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '确认失败也必须复位')
+
+  container.dispatch('pointermove', pointer(120, 114))
+  pet.onVerifyLeave = () => { throw new Error('boom') }
+  container.dispatch('pointercancel', {})
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '同步抛错也要复位')
+})
+
+test('非穿透会话：pointerleave 直接复位，不调用确认通道（保持 v0.2.0 时序）', () => {
+  const { pet, container } = loadPet({ boxes: BOXES })
+  let asked = 0
+  pet.onVerifyLeave = () => { asked += 1; return Promise.resolve({ clickThrough: false, cursor: null }) }
+  container.dispatch('pointermove', pointer(120, 114))
+  assert.ok(pet.stage.classList.contains('is-hovering'))
+  container.dispatch('pointerleave', {})
+  assert.equal(asked, 0, '指针模式不需要确认（窗口可命中，leave 可信）')
+  assert.ok(!pet.stage.classList.contains('is-hovering'), '必须同步复位')
+})
+
+test('离开确认期间会话结束 → 复位（结果不跨会话复用）', async () => {
+  const { pet, container } = loadPet({ boxes: BOXES })
+  container.dispatch('pointermove', pointer(120, 114))
+  pet.setClickThroughHover(true)
+  let resolve
+  pet.onVerifyLeave = () => new Promise((r) => { resolve = r })
+  container.dispatch('pointerleave', {})
+  pet.setClickThroughHover(false) // 期间退出会话 → 已经清过一次
+  container.dispatch('pointermove', pointer(120, 114))
+  pet.setClickThroughHover(true)
+  // 旧确认此刻才回来，而且内容是「窗口外」（若被采信就会清掉新会话的状态）
+  resolve({ clickThrough: true, cursor: null })
+  await new Promise((r) => setTimeout(r, 0))
+  assert.ok(pet.stage.classList.contains('is-hovering'), '旧的确认结果必须作废（不得清掉新会话的状态）')
+})
+
+test('诊断日志：VLLM_PET_DEBUG_HOVER 打开时输出状态源与清状态调用栈，默认关闭零输出', () => {
+  const off = loadPet({ boxes: BOXES })
+  let offLines = 0
+  off.pet.onDebug = () => { offLines += 1 }
+  off.container.dispatch('pointermove', pointer(120, 114))
+  off.pet.clearHoverFade('test')
+  assert.equal(offLines, 0, '默认关闭：一条日志都不发')
+
+  const on = loadPet({ boxes: BOXES })
+  const lines = []
+  on.pet.onDebug = (m) => lines.push(m)
+  on.pet.setDebugHover(true)
+  on.container.dispatch('pointermove', pointer(120, 114)) // 本地指针来源
+  on.pet.setClickThroughHover(true)
+  on.pet.setExternalCursor({ nx: 0.5, ny: 0.4 }) // 主进程来源
+  on.pet.clearHoverFade('unit-test') // 清状态
+  const all = lines.join('\n')
+  assert.match(all, /pointer: \(120,114\)/, '必须记录指针来源的判定')
+  assert.match(all, /external: nx=0\.500/, '必须记录主进程光标来源')
+  assert.match(all, /mode: clickThroughHover=true/, '必须记录模式切换')
+  assert.match(all, /clear reason=unit-test/, '清状态必须带原因')
+  assert.match(all, /调用栈/, '清状态必须带调用栈')
 })
 
 test('穿透会话：退出后重新武装 pointerover（指针静止也能恢复判定）', () => {

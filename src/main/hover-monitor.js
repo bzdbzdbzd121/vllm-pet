@@ -8,17 +8,23 @@
  * 本文件不含平台判断：`supported` 由 main.js 传入（Linux 恒 false → 零行为）。
  * 也不碰 Electron：光标/窗口框/发送/时钟/定时器全部注入，便于在 Node 里跑 E1–E7。
  *
- * 状态机（阶段 0 裁决 §2.3）：
+ * 状态机（阶段 0 裁决 §2.3，v0.3.3 修订「超时不得清状态」）：
  *   [stopped] --(唤起 start)--> [会话中：seed + 每 intervalMs 采样]
  *   会话中：
  *     - 渲染层上报「收到带坐标的转发事件」→ 事件源取得权威，轮询停止（稳态零轮询）
  *     - 采样出现 ≥2 个不同读数 → 轮询取得权威，之后只在变化时推送
- *     - 都没有 → 种子（临时候选）在 1.5s 后撤回并记一次日志 → 保持 fail-closed
+ *     - 都没有 → 种子只是「本会话的一次有效观察」，**不按时间撤回**；仍按变化推送，
+ *       过了 seedTtlMs 只记一次「未获证」诊断日志（v0.3.2 曾在这里 emit(null)，导致
+ *       手停在宠物上 1.5s 后淡化自己消失）
+ *     - 采样读到窗口外 → 推 null（**这是唯一的「无事件清状态」依据**：明确的离开）
  *     - 采样抛错/非有限 → 清状态 + 停轮询 + 只记一次日志（永不抛到未捕获异常）
  *
- * 关于「决策窗」：本实现不设独立的 400ms 窗，而是把它折叠进「种子有效期 1.5s + 存活证据阈值」——
- * 两者共同决定「多久没有证据就 fail-closed」。刻意**不**在窗口到期时停止采样：停了以后即使
- * 数据源恢复也再也拿不到「≥2 个不同读数」，等于把一次瞬态故障变成永久失效。
+ * 清状态的完整清单（除此之外没有任何路径会 emit(null)）：采样失败、读到窗口外、
+ * 宿主 stop()（hide/minimize/lock/关穿透/关功能/退出）、握手 sync() 时按当下光标判到窗外。
+ *
+ * 关于「决策窗」：本实现不设独立的 400ms 窗，而是把它折叠进「存活证据阈值 + seedTtlMs 诊断」——
+ * 刻意**不**在窗口到期时停止采样：停了以后即使数据源恢复也再也拿不到「≥2 个不同读数」，
+ * 等于把一次瞬态故障变成永久失效。
  */
 import { DEFAULT_HOVER_FADE } from '../shared/hover-fade.js'
 
@@ -68,6 +74,7 @@ const isBox = (b) => !!b && Number.isFinite(b.x) && Number.isFinite(b.y) && Numb
  * @param {Function} [opts.clearIntervalFn]
  * @param {(msg: string, err?: unknown) => void} [opts.log]
  * @param {(reason: 'degraded') => void} [opts.onDegrade] 监控自行降级时通知宿主（渲染层回到指针模式）
+ * @param {(msg: string) => void} [opts.debug] 诊断日志（VLLM_PET_DEBUG_HOVER=1 时由 main.js 注入；默认 null）
  */
 export function createHoverMonitor({
   getCursor,
@@ -80,7 +87,8 @@ export function createHoverMonitor({
   setIntervalFn = (fn, ms) => setInterval(fn, ms),
   clearIntervalFn = (id) => clearInterval(id),
   log = () => {},
-  onDegrade = () => {}
+  onDegrade = () => {},
+  debug = null
 } = {}) {
   let sessionActive = false // 会话是否还在（事件源接管后依然算在会话内）
   let running = false // 轮询定时器是否在跑（E3/E6/E7 的「运行中/停止」）
@@ -97,11 +105,28 @@ export function createHoverMonitor({
   let lastPayloadKey = null
   let lastPayload = null
 
-  const emit = (payload, force = false) => {
+  /** 诊断日志（默认关闭：debug 为 null 时零开销） */
+  const dbg = (msg) => {
+    if (!debug) return
+    try {
+      debug(msg)
+    } catch { /* 日志失败不影响状态机 */ }
+  }
+  /** 清状态的调用栈（只在 emit(null) 时采集，且仅在 debug 打开时） */
+  const clearStack = () => {
+    if (!debug) return ''
+    const lines = String(new Error('hover:clear').stack || '').split('\n').slice(1, 5)
+    return lines.length ? ` | 调用栈${lines.join('')}` : ''
+  }
+
+  const emit = (payload, force = false, reason = '') => {
     const key = payload ? `${payload.nx},${payload.ny}` : 'null'
     if (!force && key === lastPayloadKey) return
     lastPayloadKey = key
     lastPayload = payload
+    dbg(`emit ${payload ? `nx=${payload.nx.toFixed(3)} ny=${payload.ny.toFixed(3)}` : 'null'}` +
+      ` src=${source ?? 'seed'}${reason ? ` reason=${reason}` : ''}` +
+      (payload ? '' : clearStack()))
     try {
       send(payload)
     } catch {
@@ -142,7 +167,8 @@ export function createHoverMonitor({
     sessionActive = false
     source = null
     seedActive = false
-    emit(null)
+    dbg(`fail: ${err && err.message ? err.message : String(err)}`)
+    emit(null, false, 'fail')
     try {
       onDegrade('degraded')
     } catch { /* 宿主回调失败不影响 */ }
@@ -190,24 +216,20 @@ export function createHoverMonitor({
     if (!running) return
     const payload = sample()
     if (!running) return // 这一拍失败已经把定时器停掉了
-    if (source === 'poller') {
-      emit(payload)
-      return
-    }
     if (source === 'events') return // 事件源独占（正常情况下定时器已停）
-    // 未获证：种子到期就撤回一次，之后保持 fail-closed（不做任何自发状态改变）
-    if (seedActive) {
-      if (now() - seedAt < seedTtlMs) return
-      seedActive = false
-      if (!loggedSeedExpired) {
-        loggedSeedExpired = true
-        try {
-          log(`[hover-monitor] ${Math.round(seedTtlMs)}ms 内没有任何来源出示存活证据，撤回候选状态（fail-closed）`)
-        } catch { /* ignore */ }
-      }
-      emit(null)
-      return
+    // 「未获证」只影响日志，不影响状态：
+    // 手停在宠物上时本来就没有任何输入，靠超时 emit(null) 会让淡化在 seedTtlMs 后自己消失
+    // （v0.3.2 Windows 穿透缺陷：淡一下就恢复）。这里只记一次诊断，然后照常「变化即推送」。
+    if (seedActive && !loggedSeedExpired && now() - seedAt >= seedTtlMs) {
+      loggedSeedExpired = true
+      try {
+        log(`[hover-monitor] ${Math.round(seedTtlMs)}ms 内未取得存活证据（读数恒定/无事件）：保持当前状态，不清状态`)
+      } catch { /* ignore */ }
+      dbg(`seed unconfirmed after ${Math.round(seedTtlMs)}ms（保持状态）`)
     }
+    // 本来就没有状态可清时不要凭空推 null（避免「没淡化过却收到 clear」）
+    if (payload === null && lastPayloadKey === null) return
+    emit(payload, false, payload ? (source === 'poller' ? 'poller' : 'seed') : 'cursor-outside')
   }
 
   return {
@@ -226,12 +248,14 @@ export function createHoverMonitor({
       }
       running = true
       timer = setIntervalFn(tick, intervalMs)
+      dbg(`start: seed=${seedActive} payload=${payload ? 'inside' : 'none'}`)
       return true
     },
 
     /** 结束会话：停轮询 + 清状态（幂等；未在会话中则什么都不发） */
     stop() {
       const had = sessionActive || running
+      dbg(`stop: had=${had}`)
       clearTimer()
       sessionActive = false
       source = null
@@ -239,7 +263,7 @@ export function createHoverMonitor({
       degraded = false // 允许下次会话重试
       readings.clear()
       lastReadingKey = null
-      if (had) emit(null)
+      if (had) emit(null, false, 'stop')
       return had
     },
 
@@ -252,6 +276,7 @@ export function createHoverMonitor({
       if (info && info.hasCoords === false) return false
       if (source === 'events') return true
       const wasPoller = source === 'poller'
+      dbg(`event: source=${source ?? 'none'} → events`)
       source = 'events'
       seedActive = false
       clearTimer() // 事件源稳态零轮询
@@ -278,7 +303,8 @@ export function createHoverMonitor({
       if (!source && !seedActive) return null
       const payload = sample({ note: false })
       if (!sessionActive) return null // 采样失败：fail() 已清状态并通知降级
-      emit(payload, true)
+      dbg(`sync: payload=${payload ? 'inside' : 'null'} src=${source ?? 'seed'}`)
+      emit(payload, true, 'sync')
       return payload
     },
 
@@ -293,6 +319,8 @@ export function createHoverMonitor({
         session: sessionActive,
         source,
         degraded,
+        seed: seedActive,
+        seedExpired: loggedSeedExpired,
         cursor: lastPayload,
         /** 渲染层判定用的不透明度参考（配置里另有一份，这里只做展示/调试） */
         opacity: DEFAULT_HOVER_FADE.opacity

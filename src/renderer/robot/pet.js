@@ -53,6 +53,11 @@ export class PetView {
     this._clickThroughHover = false
     this._systemEventReported = false
     this.onSystemEvent = null // 由入口注入：事件源存活证明（每个会话只上报一次）
+    // 穿透会话里 pointerleave 不可靠（窗口忽略鼠标事件时命中测试会抖动），改为向主进程确认
+    this.onVerifyLeave = null // 由入口注入：() => Promise<{clickThrough, cursor}>
+    this.onDebug = null // 由入口注入：诊断日志通道（VLLM_PET_DEBUG_HOVER=1 才有）
+    this._debugHover = false
+    this._leaveSeq = 0
 
     this.stage = document.createElement('div')
     this.stage.className = 'pet-stage st-idle'
@@ -230,9 +235,11 @@ export class PetView {
       this._hoverOverArmed = false
       settle(e)
     })
-    // 指针离开容器（含快速移出窗口）、触摸被系统打断（pointercancel）→ 复位
-    this.container.addEventListener('pointerleave', () => this.clearHoverFade())
-    this.container.addEventListener('pointercancel', () => this.clearHoverFade())
+    // 指针离开容器（含快速移出窗口）、触摸被系统打断（pointercancel）→ 复位。
+    // 穿透会话里这两个事件不可信（窗口 setIgnoreMouseEvents 时命中测试不认这扇窗，
+    // Windows 上可能「手一停就补发一个 leave」）→ 交给 _onPointerLeave 向主进程确认真实光标。
+    this.container.addEventListener('pointerleave', () => this._onPointerLeave('pointerleave'))
+    this.container.addEventListener('pointercancel', () => this._onPointerLeave('pointercancel'))
     // 失焦 / 页面隐藏（最小化、切桌面、锁屏）→ 复位，并允许下个 pointerover 重新建立。
     // 穿透会话里**不清**：穿透窗口几乎不会获得焦点，靠 blur 会误清且不会自愈；
     // 「离开窗口/隐藏/最小化/锁屏」由主进程推送 null 或停轮询负责（阶段 0 裁决 §2.3 规则 5）。
@@ -354,6 +361,8 @@ export class PetView {
     const next = !!on
     if (next === this._clickThroughHover) return
     this._clickThroughHover = next
+    this._leaveSeq += 1 // 会话切换后，旧的「离开确认」结果作废
+    this._dbg(`mode: clickThroughHover=${next}`)
     if (next) {
       this._systemEventReported = false // 新会话：事件源可以再上报一次存活证明
       return
@@ -377,14 +386,16 @@ export class PetView {
     const nx = Number(payload?.nx)
     const ny = Number(payload?.ny)
     if (!payload || !Number.isFinite(nx) || !Number.isFinite(ny)) {
-      this.clearHoverFade()
+      this._dbg('external: null（主进程报「不在窗口内/未知」）')
+      this.clearHoverFade('external-null')
       return false
     }
     const box = this.container?.getBoundingClientRect?.() || { left: 0, top: 0, width: 0, height: 0 }
     const x = box.left + nx * box.width
     const y = box.top + ny * box.height
     const over = containsPoint(this.getHoverRect(), x, y)
-    this._setHovering(over)
+    this._dbg(`external: nx=${nx.toFixed(3)} ny=${ny.toFixed(3)} → over=${over}`)
+    this._setHovering(over, 'external')
     return true
   }
 
@@ -393,7 +404,9 @@ export class PetView {
     const rect = this.getHoverRect()
     const onPanel = Boolean(e?.target?.closest?.('.pet-settings'))
     this._noteSystemEvent(e)
-    this._setHovering(!onPanel && containsPoint(rect, e?.clientX, e?.clientY))
+    const over = !onPanel && containsPoint(rect, e?.clientX, e?.clientY)
+    this._dbg(`pointer: (${e?.clientX},${e?.clientY}) onPanel=${onPanel} → over=${over}`)
+    this._setHovering(over, 'pointer')
   }
 
   /**
@@ -411,16 +424,83 @@ export class PetView {
   }
 
   /** 锁存悬停状态：只在指针事件里调用；状态未变时不重复写 DOM */
-  _setHovering(over) {
+  _setHovering(over, why = '') {
     const next = !!over
     if (next === this._hovering) return
     this._hovering = next
     this.stage.classList.toggle('is-hovering', next)
+    this._dbg(`latch: hovering=${next}${why ? ` by=${why}` : ''}`)
   }
 
-  /** 清除悬停锁存（失焦/锁屏/页面隐藏/关闭开关时调用） */
-  clearHoverFade() {
-    this._setHovering(false)
+  /** 清除悬停锁存（失焦/锁屏/页面隐藏/关闭开关/确认离开时调用） */
+  clearHoverFade(reason = '') {
+    if (this._hovering) this._dbg(`clear${reason ? ` reason=${reason}` : ''}${this._clearStack()}`)
+    this._setHovering(false, reason ? `clear:${reason}` : 'clear')
+  }
+
+  /** 诊断用：清状态的调用栈（只有 VLLM_PET_DEBUG_HOVER=1 时采集） */
+  _clearStack() {
+    if (!this._debugHover) return ''
+    const lines = String(new Error('clear').stack || '').split('\n').slice(1, 5)
+    return lines.length ? ` | 调用栈${lines.join('')}` : ''
+  }
+
+  /** 诊断日志：默认关闭，零开销 */
+  _dbg(msg) {
+    if (!this._debugHover) return
+    try {
+      this.onDebug?.(msg)
+    } catch { /* 日志失败不影响状态机 */ }
+  }
+
+  /** 打开诊断日志（入口按 VLLM_PET_DEBUG_HOVER 决定；默认关闭） */
+  setDebugHover(on) {
+    this._debugHover = !!on
+  }
+
+  /**
+   * 离开容器：非穿透会话直接复位（窗口可命中，leave 可信）；
+   * 穿透会话里先向主进程确认「此刻光标是否真在窗口外」——只有确认离开才复位。
+   * 为什么：窗口 `setIgnoreMouseEvents(true, {forward:true})` 时命中测试不认这扇窗，
+   * Windows 上「手一停就补发 pointerleave」会让淡化在停顿后自己消失（v0.3.2 用户症状）。
+   * 确认失败/超时也复位（fail-closed，宁可多恢复一次不透明）。
+   */
+  _onPointerLeave(kind) {
+    if (!this._clickThroughHover) {
+      this.clearHoverFade(kind)
+      return
+    }
+    this._verifyLeave(kind)
+  }
+
+  /** 穿透会话的离开确认：主进程单次采样，报告「不在窗口内/未知」才复位 */
+  _verifyLeave(kind) {
+    const seq = ++this._leaveSeq
+    const clear = (why) => {
+      if (seq !== this._leaveSeq) return // 期间会话/确认已更新，旧结果作废
+      this.clearHoverFade(why)
+    }
+    let pending
+    try {
+      pending = this.onVerifyLeave?.()
+    } catch {
+      clear(`${kind}-verify-error`)
+      return
+    }
+    if (!pending || typeof pending.then !== 'function') {
+      clear(`${kind}-unverifiable`)
+      return
+    }
+    this._dbg(`leave-verify(${kind}) → 询问主进程`)
+    pending.then(
+      (state) => {
+        if (seq !== this._leaveSeq) return
+        if (!state || !state.clickThrough) { clear(`${kind}-session-ended`); return }
+        if (!state.cursor) { clear(`${kind}-outside`); return }
+        this._dbg(`leave-verify(${kind}) → 主进程确认光标仍在窗口内，保持淡化`)
+      },
+      () => clear(`${kind}-verify-failed`)
+    )
   }
 
   _applyBobDuration() {

@@ -48,6 +48,9 @@ if (SMOKE) {
  */
 const HOVER_SUPPORTED_PLATFORMS = ['win32', 'darwin']
 const HOVER_SUPPORTED = HOVER_SUPPORTED_PLATFORMS.includes(process.platform)
+// 穿透悬停诊断日志：VLLM_PET_DEBUG_HOVER=1 打开（默认关闭 → 下面所有分支都不执行，零性能影响）
+const HOVER_DEBUG = process.env.VLLM_PET_DEBUG_HOVER === '1'
+const hoverDebug = HOVER_DEBUG ? (msg) => console.log('[hover-debug]', msg) : null
 
 let win = null
 let settingsWin = null
@@ -89,6 +92,7 @@ function initHoverMonitor() {
       if (win && !win.isDestroyed()) win.webContents.send('hover:cursor', payload)
     },
     log: (...args) => console.warn(...args),
+    debug: hoverDebug,
     // 监控自己判定「读不到全局光标」→ 渲染层回到指针模式（失焦复位等行为也随之恢复）
     onDegrade: () => {
       hoverMode = false
@@ -117,9 +121,13 @@ function syncHoverMonitor({ resend = false } = {}) {
   }
   hoverMode = active
   if (active) {
+    hoverDebug?.(`session: 进入穿透悬停会话（supported=${HOVER_SUPPORTED}）`)
     win.webContents.send('hover:mode', { clickThrough: true })
     hoverMonitor.start()
   } else {
+    const config = store.load()
+    hoverDebug?.(`session: 退出穿透悬停会话（clickThrough=${!!config.window?.clickThrough} enabled=${
+      config.hoverFade?.enabled !== false} visible=${win?.isVisible?.()} minimized=${win?.isMinimized?.()} locked=${powerPaused}）`)
     hoverMonitor.stop()
     win.webContents.send('hover:mode', { clickThrough: false })
   }
@@ -387,6 +395,10 @@ function registerIpc() {
     // 不能直接返回 getState().cursor —— 事件源会话里轮询已停，那是上一次推送的残值，
     // 页面重载后光标已移出窗口时会“驻留淡化”。
     const cursor = hoverMode && hoverMonitor ? hoverMonitor.sync() : null
+    if (HOVER_DEBUG) {
+      const st = hoverMonitor?.getState?.() || {}
+      hoverDebug?.(`handshake: mode=${hoverMode} cursor=${cursor ? 'inside' : 'null'} source=${st.source ?? '-'} running=${!!st.running} seed=${!!st.seed}`)
+    }
     const state = hoverMonitor?.getState?.() || {}
     return {
       clickThrough: hoverMode,
@@ -398,6 +410,8 @@ function registerIpc() {
   })
   // 渲染层收到「带坐标的转发指针事件」时上报一次 → 事件源取得权威、主进程停轮询
   ipcMain.on('hover:event', () => hoverMonitor?.reportEvent({ hasCoords: true }))
+  // 渲染层诊断（VLLM_PET_DEBUG_HOVER=1）：状态源/锁存/清状态调用栈统一在终端打印
+  ipcMain.on('hover:debug', (_e, msg) => hoverDebug?.(`[renderer] ${msg}`))
   ipcMain.on('drag:start', startDrag)
   ipcMain.on('drag:end', endDrag)
   ipcMain.on('app:quit', () => app.quit())

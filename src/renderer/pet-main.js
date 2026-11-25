@@ -75,6 +75,11 @@ async function boot() {
 
   // 穿透悬停：事件源的存活证明（收到带坐标的转发指针事件时上报一次，主进程据此停轮询）
   pet.onSystemEvent = () => bridge?.reportHoverEvent?.()
+  // 穿透会话里 pointerleave 不可靠：由主进程单次采样确认真实光标（只有确认离开才复位）
+  pet.onVerifyLeave = () => bridge?.getHoverState?.() ?? null
+  // 诊断日志通道（VLLM_PET_DEBUG_HOVER=1 时才打开；默认关闭、零开销）
+  pet.setDebugHover(bridge?.debugHoverEnabled === true)
+  pet.onDebug = (msg) => bridge?.debugHover?.(msg)
 
   // 穿透悬停：启动时握手一次（主进程可能先于页面推送），随后订阅模式与兜底光标。
   // 模式载荷 `{ clickThrough }`：只有「穿透开 + 悬停开 + 平台支持 + 可见」的会话才是 true。
@@ -89,7 +94,7 @@ async function boot() {
   bridge?.onPowerPause?.((paused) => {
     pet.stage.classList.toggle('power-paused', !!paused)
     // 锁屏/休眠时清掉悬停锁存：恢复后不会残留「一直淡化」
-    if (paused) pet.clearHoverFade()
+    if (paused) pet.clearHoverFade('power-pause')
   })
 
   // 浏览器 Mock 模式下未配置地址时自动弹出内嵌面板（桌面版由主进程打开设置窗口）

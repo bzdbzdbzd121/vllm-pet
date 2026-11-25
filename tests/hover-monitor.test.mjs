@@ -95,18 +95,18 @@ test('种子：启动时光标在窗口外 → 不发消息（渲染层本来就
 
 /* ---------------- E2 冻结源不得取得权威 ---------------- */
 
-test('E2 冻结源（恒定读数、无事件）：永不改状态，种子 1.5s 过期后撤回并只记一次', () => {
+test('E2 恒定读数（无事件）：不取得权威，但**不因超时撤回**（只记一次「未获证」日志）', () => {
   const { monitor, clock, sent, logs } = makeMonitor({ cursor: inside })
   monitor.start()
   assert.equal(sent.length, 1, '前提：种子已发')
   clock.advance(1000)
-  assert.equal(sent.length, 1, '1s 内种子仍然有效（未获证但也不撤回）')
+  assert.equal(sent.length, 1, '1s 内没有新读数 → 不重复推送')
   assert.equal(monitor.getState().source, null, '恒定读数不构成存活证据 → 无权威')
   clock.advance(600) // 累计 1.6s > 1.5s
-  assert.deepEqual(lastSent(sent), null, '种子过期必须撤回（不能卡在淡化）')
-  assert.equal(logs.length, 1, '过期只记一次日志')
+  assert.deepEqual(lastSent(sent), { nx: 0.5, ny: 0.5 }, '超时不得撤回（无输入、无离开）')
+  assert.equal(logs.length, 1, '「未获证」只记一次日志')
   clock.advance(3000)
-  assert.deepEqual(lastSent(sent), null, '之后恒定读数不得再把状态点亮')
+  assert.deepEqual(lastSent(sent), { nx: 0.5, ny: 0.5 }, '恒定读数保持当前状态，不点亮也不清除')
   assert.equal(logs.length, 1, '日志不得刷屏')
 })
 
@@ -123,7 +123,7 @@ test('E2 「≥2 个不同读数」才算存活：动 1px 都不算，动到新�
   monitor.start()
   clock.advance(3000)
   assert.equal(monitor.getState().source, null, '始终同一个读数 → 无权威')
-  assert.deepEqual(lastSent(sent), null)
+  assert.deepEqual(lastSent(sent), { nx: 0.5, ny: 0.5 }, '无权威 ≠ 清状态：保持最后一次有效读数')
 })
 
 test('E4 轮询兜底：出现 2 个不同读数 → 取得权威，之后随采样翻转（同值不重复发）', () => {
@@ -148,6 +148,51 @@ test('E4 轮询兜底：出现 2 个不同读数 → 取得权威，之后随采
   clock.advance(100)
   assert.ok(lastSent(sent) && lastSent(sent).nx > 0.4, '回到窗口内 → 推坐标')
   assert.ok(sent.length > seedCount)
+})
+
+/* ---------------- Windows 穿透会话：无输入时不得清状态（v0.3.2 缺陷） ---------------- */
+
+test('再现 v0.3.2 Windows 缺陷：光标停在宠物上、全程无事件 → 1.5s/3s 后不得清状态', () => {
+  // 用户报告：只有开穿透时，手停在宠物上「淡一下就恢复」；移动才保持淡化。
+  // 成因：会话启动只发了一次「种子」，种子 1.5s 到期就 emit(null) —— 期间没有任何输入、
+  // 也没有任何离开，渲染层收到 null 就当「离开」清掉锁存。非穿透路径没有这段 TTL，所以只在穿透下出现。
+  const { monitor, clock, sent } = makeMonitor({ cursor: inside })
+  monitor.start()
+  assert.deepEqual(sent, [{ nx: 0.5, ny: 0.5 }], '前提：种子已推送（渲染层已淡化）')
+  clock.advance(1600)
+  assert.deepEqual(lastSent(sent), { nx: 0.5, ny: 0.5 }, '1.6s：手没动、也没离开，不得清状态')
+  clock.advance(1400)
+  assert.deepEqual(lastSent(sent), { nx: 0.5, ny: 0.5 }, '3s：仍然不得清状态')
+  assert.equal(sent.filter((p) => p === null).length, 0, '全程不得出现 null')
+  assert.ok(monitor.getState().cursor, 'getState 仍报告在窗口内（调试/诊断口径一致）')
+})
+
+test('事件源取得权威后停下 5s：不得清状态（稳态零轮询，只有明确离开才清）', () => {
+  const { monitor, clock, sent } = makeMonitor({ cursor: inside })
+  monitor.start()
+  monitor.reportEvent({ hasCoords: true })
+  assert.equal(monitor.getState().source, 'events')
+  const count = sent.length
+  clock.advance(5000)
+  assert.equal(sent.length, count, '事件源会话里不许有任何自发推送')
+  assert.equal(sent.filter((p) => p === null).length, 0, '不许出现 null')
+})
+
+test('明确的离开：光标读到窗口外 → 推 null（种子期也算离开）', () => {
+  let pos = inside()
+  const { monitor, clock, sent } = makeMonitor({ cursor: () => pos })
+  monitor.start()
+  pos = outside()
+  clock.advance(100)
+  assert.deepEqual(lastSent(sent), null, '读到窗口外 → 必须清状态（这是唯一的「无事件清状态」依据）')
+})
+
+test('隐藏/最小化 → 宿主 stop() → 清状态（明确的停止原因）', () => {
+  const { monitor, clock, sent } = makeMonitor({ cursor: inside })
+  monitor.start()
+  monitor.stop() // main.js 的 hide/minimize/lock/关穿透 都走这里
+  assert.equal(clock.active(), 0)
+  assert.deepEqual(lastSent(sent), null, 'stop 必须推 null 清状态')
 })
 
 /* ---------------- E3 事件源优先 ---------------- */
@@ -327,17 +372,17 @@ test('sync 采样失败 → 返回 null、清状态、停轮询、不抛（fail-
   assert.equal(logs.length, 1, '只记一次日志')
 })
 
-test('冻结源 + 种子过期后：sync 不得把种子值重新点亮（fail-closed）', () => {
-  const { monitor, clock, sent } = makeMonitor({ cursor: inside })
-  monitor.start() // 种子 {0.5,0.5}
-  clock.advance(1600) // 1.5s 无存活证据 → 种子撤回
-  assert.deepEqual(lastSent(sent), null, '前提：种子已撤回')
+test('从来没过有效读数（启动即在窗外）时：sync 必须给 null（不点亮无证据的状态）', () => {
+  const { monitor, clock, sent } = makeMonitor({ cursor: outside })
+  monitor.start() // 启动采样在窗口外 → 没有种子
+  clock.advance(1600)
+  assert.deepEqual(sent, [], '前提：全程没有推送')
   const before = sent.length
 
   const payload = monitor.sync()
-  assert.equal(payload, null, '既无权威又无有效种子时，握手必须给 null')
-  assert.equal(sent.length, before, '不得把恒定（冻结）读数当成状态推出去')
-  assert.deepEqual(lastSent(sent), null, '状态保持未悬停')
+  assert.equal(payload, null, '既无权威又从未有过有效读数 → 握手给 null')
+  assert.equal(sent.length, before, 'null 与「本来就没状态」相同，不必再推一次')
+  assert.deepEqual(lastSent(sent), undefined, '状态保持未悬停')
   assert.equal(monitor.getState().source, null, '不得因此授予权威')
 })
 

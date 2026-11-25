@@ -34,6 +34,9 @@ contextBridge.exposeInMainWorld('vllmPet', {
     return () => ipcRenderer.removeListener('hover:cursor', listener)
   },
   getHoverState: () => ipcRenderer.invoke('hover:cursor:get'),
+  // 诊断（VLLM_PET_DEBUG_HOVER=1）：渲染层把状态源/锁存/清状态栈发到主进程统一打印
+  debugHoverEnabled: process.env.VLLM_PET_DEBUG_HOVER === '1',
+  debugHover: (msg) => ipcRenderer.send('hover:debug', String(msg)),
   // 事件源存活证明：渲染层收到「带坐标的转发指针事件」时上报一次（穿透会话内）
   reportHoverEvent: () => ipcRenderer.send('hover:event'),
 
