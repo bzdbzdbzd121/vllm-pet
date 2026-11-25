@@ -9,8 +9,8 @@
  * 输出格式保持不变（`scripts/probe-hover.mjs` 与 main.js 的冒烟分支不用改）。
  *
  * 语义（命中区是**矩形**，不是绘制图形）：
- * 命中区 = clamp( union( pad(本体 ∪ 地面阴影, 12×缩放), 当前可见状态文字原盒 ), 容器 )——
- * 外扩只作用于本体+阴影，状态文字用原盒（加了外扩会把底部留白吃掉、矩形退化成整窗）。
+ * 命中区 = clamp( union( pad(本体 ∪ 地面阴影, 12×缩放), padY(当前可见状态文字, 12×缩放) ), 容器 )——
+ * 状态文字**只纵向**外扩（纵向是可停区），横向不外扩（横向加 pad 会把矩形撑成整窗）。
  * 因此「矩形内的空隙」「光晕环」「阴影」「文字」都算命中；只有矩形外与设置面板除外。
  * 矩形的左右空白反例是**强制**校验（不再因文字较宽而跳过），并额外断言两侧留白 ≥6px：
  * 文字不加外扩、气泡上限 = 72% 容器宽 —— 任何一处改回去都会让矩形贴近窗口边缘，这里必须失败。
@@ -131,7 +131,8 @@
   const body = box(artBox, shadowBox)
   const expected = box(
     body ? { left: body.left - pad, top: body.top - pad, right: body.right + pad, bottom: body.bottom + pad } : null,
-    statusBox
+    // 状态文字：只纵向扩 pad（横向不外扩，否则长文字会把矩形撑成整窗）
+    statusBox ? { left: statusBox.left, top: statusBox.top - pad, right: statusBox.right, bottom: statusBox.bottom + pad } : null
   )
   const reach = expected
     ? { left: Math.max(c.left, expected.left) - c.left, right: Math.min(c.right, expected.right) - c.left }

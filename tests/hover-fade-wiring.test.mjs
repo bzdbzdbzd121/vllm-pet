@@ -175,11 +175,12 @@ test('命中：闭区间边界（矩形左右上下边算命中，外面 0.1px �
   assert.ok(!pet.stage.classList.contains('is-hovering'))
 })
 
-test('矩形算法：本体/阴影外扩 12×缩放 → 并入文字原盒 → 裁剪到容器', () => {
+test('矩形算法：本体/阴影四周外扩 + 文字只纵向扩 → 裁剪到容器', () => {
   const { pet } = loadPet({ boxes: BOXES })
-  // 本体/阴影并集 (48,17,192,241) 外扩 12 → (36,5,204,253)；文字原盒 (92,248,149,272) 并入
-  // → (36,5,204,272)。文字不加外扩，所以底边停在 272 而不是被裁到窗底 280。
-  assert.deepEqual(pet.getHoverRect(), { left: 36, top: 5, right: 204, bottom: 272 })
+  // 本体/阴影并集 (48,17,192,241) 外扩 12 → (36,5,204,253)
+  // 文字 (92,248,149,272) 纵向扩 12 → (92,236,149,284)，横向不扩（左右仍 92/149）
+  // union → (36,5,204,284) → 裁剪到容器 → 底边 280（= v0.3.0 的可停区，v0.3.1 曾缩到 272）
+  assert.deepEqual(pet.getHoverRect(), { left: 36, top: 5, right: 204, bottom: 280 })
 })
 
 test('命中：设置面板上不淡化（即使落在矩形内）', () => {
@@ -562,7 +563,7 @@ test('页面滚动 120px → 命中矩形跟着上移（不是停在旧位置）
   container.dispatch('pointermove', pointer(120, 114))
   assert.ok(pet.stage.classList.contains('is-hovering'), '前提：初始悬停中')
   const before = pet.getHoverRect()
-  assert.deepEqual(before, { left: 36, top: 5, right: 204, bottom: 272 }, '前提：初始矩形')
+  assert.deepEqual(before, { left: 36, top: 5, right: 204, bottom: 280 }, '前提：初始矩形')
 
   // 页面向下滚 120：所有客户端矩形同步上移 120，容器尺寸不变（RO 不会回调）
   scrollBy(120)
@@ -571,7 +572,7 @@ test('页面滚动 120px → 命中矩形跟着上移（不是停在旧位置）
 
   const after = pet.getHoverRect()
   assert.equal(after.top, before.top - 120, '滚动后矩形上沿必须跟着上移 120（停在旧位置就会错位）')
-  assert.deepEqual(after, { left: 36, top: -115, right: 204, bottom: 152 }, '整体上移 120，并按容器新位置裁剪')
+  assert.deepEqual(after, { left: 36, top: -115, right: 204, bottom: 160 }, '整体上移 120，并按容器新位置裁剪')
 
   // 上移后才进入矩形的区域（旧矩形外）必须命中；移出矩形的区域（旧矩形内）必须不命中
   container.dispatch('pointermove', pointer(120, -60))
