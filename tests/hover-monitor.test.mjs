@@ -195,6 +195,99 @@ test('隐藏/最小化 → 宿主 stop() → 清状态（明确的停止原因�
   assert.deepEqual(lastSent(sent), null, 'stop 必须推 null 清状态')
 })
 
+/* ---------------- 深度：事件源接管后的「窗外兜底采样」 ---------------- */
+// Windows 实测（v0.3.3）：从上/左/右移出会恢复，**从下方移出不会**。
+// 机制：命中矩形被裁剪到容器，底部间距为 0（1 档 280..280、0.6 档 168..168、2 档仅 4.2px），
+// 所以「向下方走出矩形但仍在窗口内」这段路不存在 —— 上/左/右靠窗口内的 pointermove 就能判出区外，
+// 下方只能靠 pointerleave；而穿透窗口（forward:true）不一定派发 leave，事件源又停掉了轮询 →
+// 既无事件也无采样 → 状态永久残留。
+
+test('事件源接管后：光标从下方移出（无 leave、无事件）→ 必须在兜底采样周期内清状态', () => {
+  let pos = inside()
+  const { monitor, clock, sent } = makeMonitor({ cursor: () => pos })
+  monitor.start()
+  monitor.reportEvent({ hasCoords: true })          // 事件源取得权威 → 停轮询
+  assert.equal(monitor.getState().source, 'events')
+  assert.equal(monitor.isRunning(), false, '前提：事件源稳态零轮询（这正是缺陷条件）')
+
+  pos = { x: BOUNDS.x + 120, y: BOUNDS.y + BOUNDS.height + 30 } // 从下方移出窗口
+  clock.advance(600)                                // 期间没有任何事件、也没有 leave
+  assert.deepEqual(lastSent(sent), null, '必须清状态（否则从下方移出后永久残留淡化）')
+})
+
+test('事件源接管后：窗内静止 30s 不得清除、不得推送任何坐标（不得把兜底采样当权威）', () => {
+  const { monitor, clock, sent } = makeMonitor({ cursor: inside })
+  monitor.start()
+  monitor.reportEvent({ hasCoords: true })
+  const count = sent.length
+  clock.advance(30000)
+  assert.equal(sent.length, count, '窗内静止 30s：不得有任何推送（含坐标与 null）')
+  assert.equal(monitor.getState().source, 'events', '兜底采样不得改变权威来源')
+  assert.equal(monitor.isRunning(), false, '兜底采样不是轮询：不得把 interval 定时器拉起来')
+  assert.deepEqual(lastSent(sent), { nx: 0.5, ny: 0.5 }, '状态保持为「窗口内」')
+})
+
+test('四方向移出都能清状态（上 / 左 / 右 / 下，事件源接管后无事件）', () => {
+  const dirs = {
+    上: { x: BOUNDS.x + 120, y: BOUNDS.y - 30 },
+    左: { x: BOUNDS.x - 30, y: BOUNDS.y + 140 },
+    右: { x: BOUNDS.x + BOUNDS.width + 30, y: BOUNDS.y + 140 },
+    下: { x: BOUNDS.x + 120, y: BOUNDS.y + BOUNDS.height + 30 }
+  }
+  for (const [name, out] of Object.entries(dirs)) {
+    let pos = inside()
+    const { monitor, clock, sent } = makeMonitor({ cursor: () => pos })
+    monitor.start()
+    monitor.reportEvent({ hasCoords: true })
+    pos = out
+    clock.advance(600)
+    assert.deepEqual(lastSent(sent), null, `${name} 方向移出必须清状态`)
+  }
+})
+
+test('兜底采样不看「主进程最后推送值」：本地指针淡化 + lastPayload 为 null 时仍要清一次，且不刷屏', () => {
+  // 端到端实测到的坑：握手时采样到窗外 → 主进程 lastPayload 已是 null，而渲染层的淡化是本地
+  // pointermove 建立的（主进程不知道）。若兜底采样用去重/看 lastPayload，就会把这次清状态吞掉。
+  let pos = outside()
+  const { monitor, clock, sent } = makeMonitor({ cursor: () => pos })
+  monitor.start()                     // 窗外启动 → 没有种子
+  monitor.reportEvent({ hasCoords: true })
+  assert.equal(monitor.sync(), null, '前提：握手时在窗外 → 推过一次 null')
+  const n0 = sent.length
+  pos = inside()                      // 渲染层靠本地 pointermove 淡化（主进程的 lastPayload 仍是 null）
+  clock.advance(600)
+  assert.equal(monitor.getState().cursor, null, '前提：主进程仍认为「没有状态」')
+  pos = outside()                     // 从下方移出（无 leave、无事件）
+  clock.advance(1000)
+  const nulls = sent.slice(n0).filter((p) => p === null).length
+  assert.equal(nulls, 1, '必须强制清一次（不能被 lastPayload/去重吞掉）')
+  clock.advance(3000)
+  assert.equal(sent.slice(n0).filter((p) => p === null).length, 1, '同一段「窗外」不重复推送（不刷屏）')
+})
+
+test('兜底采样只在事件源会话里跑：种子/轮询态不额外清状态（读数可用但恒定 → 保持）', () => {
+  const { monitor, clock, sent } = makeMonitor({ cursor: inside })
+  monitor.start()                 // 种子态（轮询在跑）
+  clock.advance(3000)
+  assert.deepEqual(sent.filter((p) => p === null).length, 0, '种子态：窗内恒定读数不得被清')
+  assert.equal(monitor.getState().guard, false, '种子态不需要兜底采样（轮询已在跑）')
+})
+
+test('兜底采样读到「读数不可用」（bounds 为空/坐标非法）时不得清状态（fail-safe）', () => {
+  const { monitor, clock, sent } = makeMonitor({ cursor: inside })
+  monitor.start()
+  monitor.reportEvent({ hasCoords: true })
+  monitor.getState() // 只读状态，不变
+  const count = sent.length
+  // 让窗口框失效（拿不到 bounds）：兜底采样应当「什么都不做」，而不是当成窗外
+  const broken = makeMonitor({ cursor: inside, bounds: () => null })
+  broken.monitor.start()
+  broken.monitor.reportEvent({ hasCoords: true })
+  broken.clock.advance(1200)
+  assert.equal(broken.sent.filter((p) => p === null).length, 0, 'bounds 不可用 → 不得清状态')
+  assert.equal(sent.length, count, '原会话不受影响')
+})
+
 /* ---------------- E3 事件源优先 ---------------- */
 
 test('E3 决策窗内收到带坐标的事件 → 事件源取得权威并停轮询', () => {
@@ -205,7 +298,9 @@ test('E3 决策窗内收到带坐标的事件 → 事件源取得权威并停轮
   assert.equal(ok, true)
   assert.equal(monitor.getState().source, 'events')
   assert.equal(monitor.isRunning(), false, '事件源稳态零轮询')
-  assert.equal(clock.active(), 0, '不得残留定时器')
+  // 轮询定时器必须清零；只剩一个低频「窗外兜底采样」（只判光标是否离开窗口，不推坐标）
+  assert.equal(clock.active(), 1, '只保留兜底采样定时器')
+  assert.equal(monitor.getState().guard, true, '兜底采样已启用')
   const count = sent.length
   clock.advance(1000)
   assert.equal(sent.length, count, '事件源接管后不再采样推送')
@@ -313,7 +408,8 @@ test('E7 事件源接管后再 start（如同一会话里 show/resize 触发 syn
   monitor.reportEvent({ hasCoords: true })
   assert.equal(monitor.getState().source, 'events')
   monitor.start()
-  assert.equal(clock.active(), 0, '事件源会话内不得因为 start 又把轮询拉起来')
+  assert.equal(monitor.isRunning(), false, '事件源会话内不得因为 start 又把轮询拉起来')
+  assert.equal(clock.active(), 1, '定时器只有兜底采样那一个（不叠加）')
 })
 
 test('sync（did-finish-load 握手）：强制重发当前光标，即使值没变', () => {

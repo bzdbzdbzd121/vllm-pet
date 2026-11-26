@@ -17,6 +17,9 @@
  *       过了 seedTtlMs 只记一次「未获证」诊断日志（v0.3.2 曾在这里 emit(null)，导致
  *       手停在宠物上 1.5s 后淡化自己消失）
  *     - 采样读到窗口外 → 推 null（**这是唯一的「无事件清状态」依据**：明确的离开）
+ *     - 事件源接管后仍保留一个低频兜底采样（`HOVER_GUARD_INTERVAL_MS`）**只判「光标是否在窗口外」**：
+ *       命中矩形贴着窗口底边（底部间距 0），光标向下方移出时窗口内没有「区外」位置可派发 move，
+ *       `pointerleave` 在穿透窗口上又不保证送达 → 不兜底就会永久残留（Windows 实测只坏在下方）
  *     - 采样抛错/非有限 → 清状态 + 停轮询 + 只记一次日志（永不抛到未捕获异常）
  *
  * 清状态的完整清单（除此之外没有任何路径会 emit(null)）：采样失败、读到窗口外、
@@ -30,6 +33,15 @@ import { DEFAULT_HOVER_FADE } from '../shared/hover-fade.js'
 
 /** 采样间隔：100ms（淡化过渡 160ms，够用且比 50ms 省电） */
 export const HOVER_INTERVAL_MS = 100
+/**
+ * 事件源接管后的「窗外兜底采样」间隔（ms）。事件源会话里轮询是停的（稳态零轮询），
+ * 但命中矩形被裁剪到容器 → 底部间距为 0（1 档 280..280、0.6 档 168..168、2 档仅 4.2px），
+ * 「向下走出矩形但仍在窗口内」这段路根本不存在；上/左/右靠窗口内的 pointermove 就能判出区外，
+ * 下方只能靠 pointerleave，而穿透窗口（forward:true）不保证派发 leave →
+ * 既无事件也无采样 → 状态永久残留（Windows 实测：上/左/右恢复、下方不恢复）。
+ * 这个兜底采样**只做一件事**：读到「光标在窗口外」就清状态。绝不推坐标、绝不改权威、绝不影响窗内静止。
+ */
+export const HOVER_GUARD_INTERVAL_MS = 300
 /** 种子（未获证的候选状态）有效期：到期撤回，最坏结果是「不淡化」而不是「卡在淡化」 */
 export const HOVER_SEED_TTL_MS = 1500
 /** 存活证据阈值：同一会话内至少这么多个不同读数才承认轮询源活着 */
@@ -82,6 +94,7 @@ export function createHoverMonitor({
   send,
   supported = false,
   intervalMs = HOVER_INTERVAL_MS,
+  guardIntervalMs = HOVER_GUARD_INTERVAL_MS,
   seedTtlMs = HOVER_SEED_TTL_MS,
   now = () => Date.now(),
   setIntervalFn = (fn, ms) => setInterval(fn, ms),
@@ -93,6 +106,8 @@ export function createHoverMonitor({
   let sessionActive = false // 会话是否还在（事件源接管后依然算在会话内）
   let running = false // 轮询定时器是否在跑（E3/E6/E7 的「运行中/停止」）
   let timer = null
+  let guardTimer = null // 事件源会话里的低频「窗外兜底采样」（不是轮询、不推坐标）
+  let guardOutside = false // 当前是否已在「窗外」这段里清过一次（避免每拍都推 null）
   let source = null // null | 'poller' | 'events'
   let seedActive = false
   let seedAt = 0
@@ -142,7 +157,53 @@ export function createHoverMonitor({
     running = false
   }
 
+  const clearGuard = () => {
+    if (guardTimer !== null) {
+      clearIntervalFn(guardTimer)
+      guardTimer = null
+    }
+  }
+
+  /**
+   * 兜底采样：**只判「光标是否在窗口外」**。
+   * - 窗内（含读数恒定/冻结）→ 什么都不做（绝不把这里当权威源，也就不可能引回「停下就恢复」）；
+   * - 窗口外 → 清一次状态（唯一的副作用）；
+   * - 读数不可用（抛错/非有限/bounds 无效）→ 什么都不做（fail-safe：宁可残留，不误清）。
+   */
+  const guard = () => {
+    if (!sessionActive || source !== 'events') return
+    let cursor
+    let bounds
+    try {
+      cursor = getCursor()
+      bounds = getBounds()
+    } catch {
+      return // 兜底采样不进 fail()：它是附加保险，不是权威源
+    }
+    if (!isPoint(cursor) || !isBox(bounds)) return
+    const nx = (cursor.x - bounds.x) / bounds.width
+    const ny = (cursor.y - bounds.y) / bounds.height
+    if (nx >= 0 && nx <= 1 && ny >= 0 && ny <= 1) {
+      guardOutside = false // 回到窗内：下一段「窗外」要重新清一次
+      return // 窗内（含读数恒定/冻结）→ 状态保持不变
+    }
+    if (guardOutside) return // 同一段「窗外」只清一次（不刷屏）
+    // 这里必须**强制**发：主进程的 lastPayload 可能已经是 null（握手残值），
+    // 而渲染层的淡化是本地 pointermove 建立的 —— 用去重会被吞掉，导致「下方移出」永不恢复。
+    guardOutside = true
+    dbg(`guard: 光标在窗口外（nx=${nx.toFixed(3)} ny=${ny.toFixed(3)}）→ 清状态`)
+    emit(null, true, 'guard-outside')
+  }
+
+  const startGuard = () => {
+    if (guardTimer !== null || !supported || degraded) return
+    guardTimer = setIntervalFn(guard, guardIntervalMs)
+    dbg(`guard: start ${guardIntervalMs}ms（仅判窗外）`)
+  }
+
   const resetSession = () => {
+    clearGuard()
+    guardOutside = false
     source = null
     seedActive = false
     degraded = false
@@ -164,6 +225,7 @@ export function createHoverMonitor({
       } catch { /* 日志本身失败也不能崩 */ }
     }
     clearTimer()
+    clearGuard()
     sessionActive = false
     source = null
     seedActive = false
@@ -257,6 +319,8 @@ export function createHoverMonitor({
       const had = sessionActive || running
       dbg(`stop: had=${had}`)
       clearTimer()
+      clearGuard()
+      guardOutside = false
       sessionActive = false
       source = null
       seedActive = false
@@ -280,6 +344,7 @@ export function createHoverMonitor({
       source = 'events'
       seedActive = false
       clearTimer() // 事件源稳态零轮询
+      startGuard() // 但保留低频「窗外兜底采样」（只用于发现光标离开窗口）
       if (wasPoller && !loggedUpgrade) {
         loggedUpgrade = true
         try {
@@ -319,6 +384,7 @@ export function createHoverMonitor({
         session: sessionActive,
         source,
         degraded,
+        guard: guardTimer !== null,
         seed: seedActive,
         seedExpired: loggedSeedExpired,
         cursor: lastPayload,
