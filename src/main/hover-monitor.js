@@ -170,6 +170,8 @@ export function createHoverMonitor({
    * - 窗口外 → 清一次状态（唯一的副作用）；
    * - 读数不可用（抛错/非有限/bounds 无效）→ 什么都不做（fail-safe：宁可残留，不误清）。
    */
+  // 这里刻意不走 sample()：sample() 会算归一化、记存活证据、出错还进 fail()（降级）。
+  // 兜底只判「是否在窗口外」，所以直接比 [0,1] 闭区间，异常一律吞掉、不动任何状态。
   const guard = () => {
     if (!sessionActive || source !== 'events') return
     let cursor
@@ -196,6 +198,8 @@ export function createHoverMonitor({
   }
 
   const startGuard = () => {
+    // 正常路径上到这里 supported 恒 true、degraded 恒 false（reportEvent 已先挡掉）；
+    // 保留这两个判断是为了「幂等 + 防御」：重复调用不叠加定时器，降级后不再拉起。
     if (guardTimer !== null || !supported || degraded) return
     guardTimer = setIntervalFn(guard, guardIntervalMs)
     dbg(`guard: start ${guardIntervalMs}ms（仅判窗外）`)

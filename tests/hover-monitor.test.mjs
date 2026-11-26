@@ -265,6 +265,59 @@ test('兜底采样不看「主进程最后推送值」：本地指针淡化 + la
   assert.equal(sent.slice(n0).filter((p) => p === null).length, 1, '同一段「窗外」不重复推送（不刷屏）')
 })
 
+test('兜底定时器随会话清理：stop() 与 fail() 之后不得残留任何定时器', () => {
+  // stop()：隐藏/最小化/锁屏/关穿透/关功能 全走这里
+  const a = makeMonitor({ cursor: inside })
+  a.monitor.start()
+  a.monitor.reportEvent({ hasCoords: true })
+  assert.equal(a.clock.active(), 1, '前提：事件源会话里只剩兜底采样这一个定时器')
+  a.monitor.stop()
+  assert.equal(a.clock.active(), 0, 'stop() 之后兜底采样必须被清理（否则窗口隐藏后还在读光标）')
+  assert.equal(a.monitor.getState().guard, false, 'getState().guard 也要归零')
+
+  // fail()：采样抛错 → 清状态 + 停轮询 + 兜底也要停
+  let boom = false
+  const b = makeMonitor({
+    cursor: () => {
+      if (boom) throw new Error('Wayland: no global cursor')
+      return inside()
+    }
+  })
+  b.monitor.start()
+  b.monitor.reportEvent({ hasCoords: true })
+  assert.equal(b.clock.active(), 1, '前提：兜底采样在跑')
+  boom = true
+  assert.equal(b.monitor.sync(), null, '事件源会话里轮询已停：用握手触发采样失败（真实路径）')
+  assert.equal(b.monitor.getState().degraded, true, '前提：已降级')
+  assert.equal(b.clock.active(), 0, 'fail() 之后不得残留定时器（含兜底采样）')
+  assert.equal(b.monitor.getState().guard, false)
+})
+
+test('inside → outside → inside → outside：null 恰好 2 次（每段窗外清一次 + 回窗内重置）', () => {
+  let pos = inside()
+  const { monitor, clock, sent } = makeMonitor({ cursor: () => pos })
+  monitor.start()
+  monitor.reportEvent({ hasCoords: true })
+  const n0 = sent.length
+  const nulls = () => sent.slice(n0).filter((p) => p === null).length
+
+  pos = outside() // 第 1 段窗外
+  clock.advance(1000)
+  assert.equal(nulls(), 1, '第 1 段窗外：清一次')
+  clock.advance(2000)
+  assert.equal(nulls(), 1, '同一段窗外：不重复清（不刷屏）')
+
+  pos = inside() // 回到窗内（关键：必须重置 guardOutside）
+  clock.advance(1000)
+  assert.equal(nulls(), 1, '窗内不清状（也不推送坐标）')
+
+  pos = outside() // 第 2 段窗外
+  clock.advance(1000)
+  assert.equal(nulls(), 2, '第 2 段窗外：必须再清一次（回窗内没有重置就会漏掉）')
+  clock.advance(2000)
+  assert.equal(nulls(), 2, '第 2 段窗外同样只清一次')
+})
+
 test('兜底采样只在事件源会话里跑：种子/轮询态不额外清状态（读数可用但恒定 → 保持）', () => {
   const { monitor, clock, sent } = makeMonitor({ cursor: inside })
   monitor.start()                 // 种子态（轮询在跑）
